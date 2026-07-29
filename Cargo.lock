@@ -3,5 +3,17 @@
 version = 4
 
 [[package]]
-name = "example"
+name = "common"
+version = "0.0.0"
+
+[[package]]
+name = "mp3sync"
+version = "0.0.0"
+
+[[package]]
+name = "server"
+version = "0.0.0"
+
+[[package]]
+name = "spsync"
 version = "0.0.0"

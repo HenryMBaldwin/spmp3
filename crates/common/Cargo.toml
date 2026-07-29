@@ -1,13 +1,12 @@
 [package]
-name = "example"
+name = "common"
 version = "0.0.0"
 edition = "2024"
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
-description = "Example package."
-keywords = ["example"]
-categories = ["example"]
+# TODO: remove when crate is implemented
+publish = false
 
 [dependencies]
 
