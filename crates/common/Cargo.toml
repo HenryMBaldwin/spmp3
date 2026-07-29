@@ -3,12 +3,12 @@ name = "common"
 version = "0.0.0"
 edition = "2024"
 license.workspace = true
-readme.workspace = true
+readme = "./README.md"
 repository.workspace = true
-# TODO: remove when crate is implemented
 publish = false
 
 [dependencies]
+thiserror = "2.0.19"
 
 [lints]
 workspace = true
