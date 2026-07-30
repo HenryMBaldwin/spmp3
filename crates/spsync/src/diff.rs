@@ -83,6 +83,8 @@ mod tests {
                     path: PathBuf::from(format!("{id}.mp3")),
                     added_at: Some(1),
                     liked,
+                    source_format: "OGG_VORBIS_320".to_owned(),
+                    encoder: "lame-vbr-v0".to_owned(),
                 },
             );
         }

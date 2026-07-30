@@ -11,7 +11,7 @@ use id3::{
 };
 
 use crate::{
-    Client, Entry, SpsyncError, TrackRef,
+    Client, Entry, Manifest, Removed, SpsyncError, TrackRef,
     download::{Cover, TrackMeta},
     manifest::MANIFEST_FILE,
     transcode,
@@ -69,6 +69,67 @@ fn file_name(meta: &TrackMeta, id: &str, taken: &HashSet<PathBuf>) -> PathBuf {
     candidate
 }
 
+fn partition_restores(
+    restore: &[TrackRef],
+    manifest: &Manifest,
+    library_dir: &std::path::Path,
+) -> (Vec<String>, Vec<TrackRef>) {
+    let mut restorable = Vec::new();
+    let mut redownload = Vec::new();
+
+    for track in restore {
+        match manifest.entries.get(&track.id) {
+            Some(entry) if library_dir.join(&entry.path).is_file() => {
+                restorable.push(track.id.clone());
+            }
+            _ => {
+                tracing::info!(uri = %track.uri, "preserved file is gone, re-downloading");
+                redownload.push(track.clone());
+            }
+        }
+    }
+
+    (restorable, redownload)
+}
+
+fn apply_restores(manifest: &mut Manifest, ids: &[String]) -> usize {
+    let mut restored = 0;
+
+    for id in ids {
+        if let Some(entry) = manifest.entries.get_mut(id) {
+            entry.liked = true;
+            restored += 1;
+            tracing::info!(id = %id, path = %entry.path.display(), "restored from existing file");
+        }
+    }
+
+    restored
+}
+
+fn apply_removals(
+    manifest: &mut Manifest,
+    removed: &[Removed],
+    library_dir: &std::path::Path,
+    preserve: bool,
+) -> usize {
+    for entry in removed {
+        if preserve {
+            if let Some(existing) = manifest.entries.get_mut(&entry.id) {
+                existing.liked = false;
+            }
+            tracing::info!(id = %entry.id, "unliked, keeping local file");
+        } else {
+            let path = library_dir.join(&entry.entry.path);
+            if let Err(e) = fs::remove_file(&path) {
+                tracing::warn!(path = %path.display(), error = %e, "could not remove file");
+            }
+            manifest.entries.remove(&entry.id);
+        }
+    }
+
+    removed.len()
+}
+
 fn write_tags(
     path: &std::path::Path,
     meta: &TrackMeta,
@@ -107,6 +168,7 @@ impl Client {
         taken: &HashSet<PathBuf>,
     ) -> Result<(Entry, Duration), SpsyncError> {
         let audio = self.download(track).await?;
+        let source_format = format!("{:?}", audio.format);
         let (meta, cover, ogg) = (audio.meta, audio.cover, audio.ogg);
 
         let mp3 = tokio::task::spawn_blocking(move || transcode::ogg_to_mp3(ogg))
@@ -125,6 +187,8 @@ impl Client {
                 path: relative,
                 added_at: track.added_at,
                 liked: true,
+                source_format,
+                encoder: transcode::ENCODER.to_owned(),
             },
             Duration::from_millis(u64::from(meta.duration_ms)),
         ))
@@ -185,24 +249,13 @@ impl Client {
     /// [`SpsyncError::Json`] if the manifest on disk is malformed.
     pub async fn sync_library(&self) -> Result<SyncReport, SpsyncError> {
         let diff = self.sync_diff().await?;
+        let library_dir = &self.config().library_dir;
+
+        let (restorable, redownload) =
+            partition_restores(&diff.restore, &self.manifest()?, library_dir);
 
         let mut queue = diff.add.clone();
-        let mut restorable = Vec::new();
-
-        {
-            let manifest = self.manifest()?;
-            for track in &diff.restore {
-                match manifest.entries.get(&track.id) {
-                    Some(entry) if self.config().library_dir.join(&entry.path).is_file() => {
-                        restorable.push(track.id.clone());
-                    }
-                    _ => {
-                        tracing::info!(uri = %track.uri, "preserved file is gone, re-downloading");
-                        queue.push(track.clone());
-                    }
-                }
-            }
-        }
+        queue.extend(redownload);
 
         let mut report = self.sync_tracks(&queue).await?;
 
@@ -211,33 +264,14 @@ impl Client {
         }
 
         let mut manifest = self.manifest()?;
-
-        for id in &restorable {
-            if let Some(entry) = manifest.entries.get_mut(id) {
-                entry.liked = true;
-                report.restored += 1;
-                tracing::info!(id = %id, path = %entry.path.display(), "restored from existing file");
-            }
-        }
-
-        for removed in &diff.remove {
-            if self.config().preserve {
-                if let Some(entry) = manifest.entries.get_mut(&removed.id) {
-                    entry.liked = false;
-                }
-                tracing::info!(id = %removed.id, "unliked, keeping local file");
-            } else {
-                let path = self.config().library_dir.join(&removed.entry.path);
-                if let Err(e) = fs::remove_file(&path) {
-                    tracing::warn!(path = %path.display(), error = %e, "could not remove file");
-                }
-                manifest.entries.remove(&removed.id);
-            }
-
-            report.removed += 1;
-        }
-
-        manifest.save(&self.config().library_dir.join(MANIFEST_FILE))?;
+        report.restored = apply_restores(&mut manifest, &restorable);
+        report.removed = apply_removals(
+            &mut manifest,
+            &diff.remove,
+            library_dir,
+            self.config().preserve,
+        );
+        manifest.save(&library_dir.join(MANIFEST_FILE))?;
 
         Ok(report)
     }
@@ -245,9 +279,16 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    #![allow(clippy::expect_used)]
 
-    use super::{TrackMeta, file_name, sanitize};
+    use std::{collections::HashSet, fs, path::PathBuf};
+
+    use tempfile::TempDir;
+
+    use super::{
+        Entry, Manifest, Removed, TrackMeta, TrackRef, apply_removals, apply_restores, file_name,
+        partition_restores, sanitize,
+    };
 
     fn meta(artist: &str, title: &str) -> TrackMeta {
         TrackMeta {
@@ -284,5 +325,96 @@ mod tests {
             file_name(&meta("hey, nothing", "Maine"), "abc", &taken).to_str(),
             Some("hey, nothing - Maine [abc].mp3")
         );
+    }
+
+    fn entry(id: &str, liked: bool) -> Entry {
+        Entry {
+            uri: format!("spotify:track:{id}"),
+            path: PathBuf::from(format!("{id}.mp3")),
+            added_at: Some(1),
+            liked,
+            source_format: "OGG_VORBIS_320".to_owned(),
+            encoder: "lame-vbr-v0".to_owned(),
+        }
+    }
+
+    fn library(ids: &[(&str, bool)], write_files: bool) -> (TempDir, Manifest) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut manifest = Manifest::default();
+
+        for (id, liked) in ids {
+            let entry = entry(id, *liked);
+            if write_files {
+                fs::write(dir.path().join(&entry.path), b"mp3").expect("write");
+            }
+            manifest.entries.insert((*id).to_owned(), entry);
+        }
+
+        (dir, manifest)
+    }
+
+    fn track(id: &str) -> TrackRef {
+        TrackRef {
+            id: id.to_owned(),
+            uri: format!("spotify:track:{id}"),
+            added_at: Some(1),
+        }
+    }
+
+    #[test]
+    fn restores_when_preserved_file_is_present() {
+        let (dir, manifest) = library(&[("a", false)], true);
+        let (restorable, redownload) = partition_restores(&[track("a")], &manifest, dir.path());
+
+        assert_eq!(restorable, vec!["a".to_owned()]);
+        assert!(redownload.is_empty());
+    }
+
+    #[test]
+    fn redownloads_when_preserved_file_was_deleted() {
+        let (dir, manifest) = library(&[("a", false)], false);
+        let (restorable, redownload) = partition_restores(&[track("a")], &manifest, dir.path());
+
+        assert!(restorable.is_empty());
+        assert_eq!(redownload, vec![track("a")]);
+    }
+
+    #[test]
+    fn apply_restores_marks_liked() {
+        let (_dir, mut manifest) = library(&[("a", false)], true);
+        assert_eq!(apply_restores(&mut manifest, &["a".to_owned()]), 1);
+
+        assert!(manifest.entries["a"].liked);
+    }
+
+    #[test]
+    fn preserve_keeps_file_and_marks_unliked() {
+        let (dir, mut manifest) = library(&[("a", true)], true);
+        let removed = vec![Removed {
+            id: "a".to_owned(),
+            entry: entry("a", true),
+        }];
+
+        assert_eq!(apply_removals(&mut manifest, &removed, dir.path(), true), 1);
+
+        assert!(dir.path().join("a.mp3").is_file());
+        assert!(!manifest.entries["a"].liked);
+    }
+
+    #[test]
+    fn without_preserve_deletes_file_and_entry() {
+        let (dir, mut manifest) = library(&[("a", true)], true);
+        let removed = vec![Removed {
+            id: "a".to_owned(),
+            entry: entry("a", true),
+        }];
+
+        assert_eq!(
+            apply_removals(&mut manifest, &removed, dir.path(), false),
+            1
+        );
+
+        assert!(!dir.path().join("a.mp3").exists());
+        assert!(!manifest.entries.contains_key("a"));
     }
 }
