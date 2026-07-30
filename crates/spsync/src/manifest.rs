@@ -32,6 +32,12 @@ pub struct Entry {
     pub uri: String,
     pub path: PathBuf,
     pub added_at: Option<i64>,
+    #[serde(default = "liked_default")]
+    pub liked: bool,
+}
+
+const fn liked_default() -> bool {
+    true
 }
 
 impl Manifest {

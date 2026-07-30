@@ -40,4 +40,10 @@ pub enum SpsyncError {
 
     #[error("download did not complete")]
     DownloadAborted,
+
+    #[error("audio decode error: {0}")]
+    Symphonia(#[from] symphonia::core::errors::Error),
+
+    #[error("transcode error: {0}")]
+    Transcode(String),
 }
