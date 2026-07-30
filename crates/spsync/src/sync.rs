@@ -5,10 +5,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use id3::{Tag, TagLike, Version};
+use id3::{
+    Tag, TagLike, Version,
+    frame::{Picture, PictureType},
+};
 
 use crate::{
-    Client, Entry, SpsyncError, TrackRef, download::TrackMeta, manifest::MANIFEST_FILE, transcode,
+    Client, Entry, SpsyncError, TrackRef,
+    download::{Cover, TrackMeta},
+    manifest::MANIFEST_FILE,
+    transcode,
 };
 
 const MAX_STEM: usize = 120;
@@ -63,7 +69,11 @@ fn file_name(meta: &TrackMeta, id: &str, taken: &HashSet<PathBuf>) -> PathBuf {
     candidate
 }
 
-fn write_tags(path: &std::path::Path, meta: &TrackMeta) -> Result<(), SpsyncError> {
+fn write_tags(
+    path: &std::path::Path,
+    meta: &TrackMeta,
+    cover: Option<&Cover>,
+) -> Result<(), SpsyncError> {
     let mut tag = Tag::new();
     tag.set_title(&meta.title);
     tag.set_album(&meta.album);
@@ -77,6 +87,14 @@ fn write_tags(path: &std::path::Path, meta: &TrackMeta) -> Result<(), SpsyncErro
     if let Some(disc) = meta.disc_number {
         tag.set_disc(disc);
     }
+    if let Some(cover) = cover {
+        tag.add_frame(Picture {
+            mime_type: cover.mime.clone(),
+            picture_type: PictureType::CoverFront,
+            description: String::new(),
+            data: cover.data.clone(),
+        });
+    }
 
     tag.write_to_path(path, Version::Id3v24)
         .map_err(|e| SpsyncError::Transcode(format!("id3: {e}")))
@@ -89,9 +107,9 @@ impl Client {
         taken: &HashSet<PathBuf>,
     ) -> Result<(Entry, Duration), SpsyncError> {
         let audio = self.download(track).await?;
-        let meta = audio.meta.clone();
+        let (meta, cover, ogg) = (audio.meta, audio.cover, audio.ogg);
 
-        let mp3 = tokio::task::spawn_blocking(move || transcode::ogg_to_mp3(audio.ogg))
+        let mp3 = tokio::task::spawn_blocking(move || transcode::ogg_to_mp3(ogg))
             .await
             .map_err(|_| SpsyncError::DownloadAborted)??;
 
@@ -99,7 +117,7 @@ impl Client {
         let absolute = self.config().library_dir.join(&relative);
 
         fs::write(&absolute, &mp3)?;
-        write_tags(&absolute, &meta)?;
+        write_tags(&absolute, &meta, cover.as_ref())?;
 
         Ok((
             Entry {
