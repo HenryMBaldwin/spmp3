@@ -17,6 +17,8 @@ use crate::error::SpsyncError;
 
 const FLUSH_RESERVE: usize = 7200;
 
+pub(crate) const ENCODER: &str = "lame-vbr-v0";
+
 struct Pcm {
     samples: Vec<i16>,
     sample_rate: u32,

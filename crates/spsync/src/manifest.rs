@@ -34,6 +34,10 @@ pub struct Entry {
     pub added_at: Option<i64>,
     #[serde(default = "liked_default")]
     pub liked: bool,
+    #[serde(default)]
+    pub source_format: String,
+    #[serde(default)]
+    pub encoder: String,
 }
 
 const fn liked_default() -> bool {
