@@ -8,6 +8,7 @@ use crate::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Diff {
     pub add: Vec<TrackRef>,
+    pub restore: Vec<TrackRef>,
     pub remove: Vec<Removed>,
 }
 
@@ -19,23 +20,28 @@ pub struct Removed {
 
 impl Diff {
     pub fn is_empty(&self) -> bool {
-        self.add.is_empty() && self.remove.is_empty()
+        self.add.is_empty() && self.restore.is_empty() && self.remove.is_empty()
     }
 }
 
 pub(crate) fn diff(remote: &[TrackRef], manifest: &Manifest) -> Diff {
     let remote_ids: HashSet<&str> = remote.iter().map(|t| t.id.as_str()).collect();
 
-    let add = remote
-        .iter()
-        .filter(|t| !manifest.contains(&t.id))
-        .cloned()
-        .collect();
+    let mut add = Vec::new();
+    let mut restore = Vec::new();
+
+    for track in remote {
+        match manifest.entries.get(&track.id) {
+            None => add.push(track.clone()),
+            Some(entry) if !entry.liked => restore.push(track.clone()),
+            Some(_) => {}
+        }
+    }
 
     let removed = manifest
         .entries
         .iter()
-        .filter(|(id, _)| !remote_ids.contains(id.as_str()))
+        .filter(|(id, entry)| entry.liked && !remote_ids.contains(id.as_str()))
         .map(|(id, entry)| Removed {
             id: id.clone(),
             entry: entry.clone(),
@@ -44,6 +50,7 @@ pub(crate) fn diff(remote: &[TrackRef], manifest: &Manifest) -> Diff {
 
     Diff {
         add,
+        restore,
         remove: removed,
     }
 }
@@ -63,6 +70,10 @@ mod tests {
     }
 
     fn manifest(ids: &[&str]) -> Manifest {
+        entries(ids, true)
+    }
+
+    fn entries(ids: &[&str], liked: bool) -> Manifest {
         let mut manifest = Manifest::default();
         for id in ids {
             manifest.entries.insert(
@@ -71,6 +82,7 @@ mod tests {
                     uri: format!("spotify:track:{id}"),
                     path: PathBuf::from(format!("{id}.mp3")),
                     added_at: Some(1),
+                    liked,
                 },
             );
         }
@@ -120,5 +132,22 @@ mod tests {
 
         assert!(result.add.is_empty());
         assert_eq!(result.remove.len(), 2);
+    }
+
+    #[test]
+    fn relisted_track_is_restored_not_redownloaded() {
+        let remote = vec![track("a")];
+        let result = diff(&remote, &entries(&["a"], false));
+
+        assert!(result.add.is_empty());
+        assert_eq!(result.restore, remote);
+        assert!(result.remove.is_empty());
+    }
+
+    #[test]
+    fn preserved_entry_is_not_reported_as_removed_again() {
+        let result = diff(&[], &entries(&["a"], false));
+
+        assert!(result.is_empty());
     }
 }
