@@ -18,7 +18,7 @@ use librespot_core::cache::Cache;
 pub use crate::{
     config::Config,
     diff::{Diff, Removed},
-    download::{Cover, TrackAudio, TrackMeta},
+    download::{TrackAudio, TrackMeta},
     error::SpsyncError,
     manifest::{Entry, Manifest},
     sync::{Failure, SyncReport},

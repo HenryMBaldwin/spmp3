@@ -24,26 +24,10 @@ pub struct TrackMeta {
     pub duration_ms: u32,
 }
 
-#[derive(Clone)]
-pub struct Cover {
-    pub data: Vec<u8>,
-    pub mime: String,
-}
-
-impl std::fmt::Debug for Cover {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Cover")
-            .field("bytes", &self.data.len())
-            .field("mime", &self.mime)
-            .finish()
-    }
-}
-
 pub struct TrackAudio {
     pub ogg: Vec<u8>,
     pub meta: TrackMeta,
     pub format: AudioFileFormat,
-    pub cover: Option<Cover>,
 }
 
 impl std::fmt::Debug for TrackAudio {
@@ -52,42 +36,8 @@ impl std::fmt::Debug for TrackAudio {
             .field("bytes", &self.ogg.len())
             .field("meta", &self.meta)
             .field("format", &self.format)
-            .field("cover", &self.cover)
             .finish()
     }
-}
-
-fn sniff_mime(data: &[u8]) -> Option<&'static str> {
-    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else {
-        None
-    }
-}
-
-async fn fetch_cover(session: &Session, item: &AudioItem) -> Option<Cover> {
-    let cover = item.covers.first()?;
-
-    let bytes = match session.spclient().request_url(&cover.url).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::warn!(url = %cover.url, error = %e, "could not fetch cover art");
-            return None;
-        }
-    };
-
-    let data = bytes.to_vec();
-    let Some(mime) = sniff_mime(&data) else {
-        tracing::warn!(url = %cover.url, "cover art is not jpeg or png, skipping");
-        return None;
-    };
-
-    Some(Cover {
-        data,
-        mime: mime.to_owned(),
-    })
 }
 
 fn stream_data_rate(format: AudioFileFormat) -> usize {
@@ -194,7 +144,6 @@ pub(crate) async fn download(
 ) -> Result<TrackAudio, SpsyncError> {
     let item = AudioItem::get_file(session, uri.clone()).await?;
     let meta = meta_from(&item);
-    let cover = fetch_cover(session, &item).await;
 
     let item = resolve_playable(session, item).await?;
     let (format, file_id) =
@@ -226,10 +175,5 @@ pub(crate) async fn download(
     .await
     .map_err(|_| SpsyncError::DownloadAborted)??;
 
-    Ok(TrackAudio {
-        ogg,
-        meta,
-        format,
-        cover,
-    })
+    Ok(TrackAudio { ogg, meta, format })
 }
