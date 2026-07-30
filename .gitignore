@@ -3,5 +3,3 @@
 .env
 .env.local
 .DS_Store
-.spsync-cache
-library/
