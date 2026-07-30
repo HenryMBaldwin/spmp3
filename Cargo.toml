@@ -1,17 +1,17 @@
 [workspace]
-members = ["crates/spsync", "crates/mp3sync", "crates/server", "crates/common"]
+members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/henrymbaldwin/spmp3"
+repository = "https://github.com/henrymbaldwin/rust-template"
 
 [workspace.lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
 missing_debug_implementations = "warn"
-# missing_docs = "warn"
+missing_docs = "warn"
 nonstandard_style = { level = "deny", priority = -1 }
 unsafe_code = "forbid"
 
