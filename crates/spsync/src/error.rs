@@ -25,19 +25,4 @@ pub enum SpsyncError {
 
     #[error("manifest json error: {0}")]
     Json(#[from] serde_json::Error),
-
-    #[error("manifest version {found} is newer than the supported version {supported}")]
-    ManifestVersion { found: u32, supported: u32 },
-
-    #[error("{uri} is not a track uri")]
-    UnsupportedUri { uri: String },
-
-    #[error("{uri} is unavailable and has no playable alternative")]
-    TrackUnavailable { uri: String },
-
-    #[error("{uri} has no supported audio format")]
-    NoSupportedFormat { uri: String },
-
-    #[error("download did not complete")]
-    DownloadAborted,
 }

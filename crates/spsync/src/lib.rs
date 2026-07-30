@@ -1,7 +1,6 @@
 mod auth;
 mod config;
 mod diff;
-mod download;
 mod error;
 mod library;
 mod manifest;
@@ -16,7 +15,6 @@ use librespot_core::cache::Cache;
 pub use crate::{
     config::Config,
     diff::{Diff, Removed},
-    download::{TrackAudio, TrackMeta},
     error::SpsyncError,
     manifest::{Entry, Manifest},
     track::TrackRef,
@@ -109,17 +107,6 @@ impl Client {
     pub async fn list_liked(&self) -> Result<Vec<TrackRef>, SpsyncError> {
         let session = self.inner.sessions.get().await?;
         library::list_liked(&session).await
-    }
-
-    /// # Errors
-    ///
-    /// Returns [`SpsyncError::TrackUnavailable`] if the track and all its alternatives
-    /// are unplayable, or [`SpsyncError::NoSupportedFormat`] if none is ogg vorbis.
-    pub async fn download(&self, track: &TrackRef) -> Result<TrackAudio, SpsyncError> {
-        let session = self.inner.sessions.get().await?;
-        let uri = librespot_core::SpotifyUri::from_uri(&track.uri)?;
-
-        download::download(&session, &uri).await
     }
 
     /// # Errors
