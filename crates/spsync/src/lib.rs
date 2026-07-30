@@ -6,7 +6,9 @@ mod error;
 mod library;
 mod manifest;
 mod session;
+mod sync;
 mod track;
+mod transcode;
 
 use std::{fmt, fs, path::PathBuf, sync::Arc};
 
@@ -19,6 +21,7 @@ pub use crate::{
     download::{TrackAudio, TrackMeta},
     error::SpsyncError,
     manifest::{Entry, Manifest},
+    sync::{Failure, SyncReport},
     track::TrackRef,
 };
 use crate::{manifest::MANIFEST_FILE, session::SessionManager};
