@@ -1,14 +1,25 @@
 mod auth;
 mod config;
+mod diff;
 mod error;
+mod library;
+mod manifest;
 mod session;
+mod track;
 
-use std::{fmt, fs, sync::Arc};
+use std::{fmt, fs, path::PathBuf, sync::Arc};
 
+pub use librespot_core::Session;
 use librespot_core::cache::Cache;
 
-use crate::session::SessionManager;
-pub use crate::{config::Config, error::SpsyncError};
+pub use crate::{
+    config::Config,
+    diff::{Diff, Removed},
+    error::SpsyncError,
+    manifest::{Entry, Manifest},
+    track::TrackRef,
+};
+use crate::{manifest::MANIFEST_FILE, session::SessionManager};
 
 #[derive(Clone)]
 pub struct Client {
@@ -69,5 +80,43 @@ impl Client {
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached.
     pub async fn whoami(&self) -> Result<String, SpsyncError> {
         Ok(self.inner.sessions.get().await?.username())
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached.
+    pub async fn session(&self) -> Result<Session, SpsyncError> {
+        self.inner.sessions.get().await
+    }
+
+    pub fn manifest_path(&self) -> PathBuf {
+        self.inner.config.library_dir.join(MANIFEST_FILE)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`SpsyncError::Json`] if the manifest on disk is malformed.
+    pub fn manifest(&self) -> Result<Manifest, SpsyncError> {
+        Manifest::load(&self.manifest_path())
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached, or
+    /// [`SpsyncError::Spotify`] if the collection cannot be fetched.
+    pub async fn list_liked(&self) -> Result<Vec<TrackRef>, SpsyncError> {
+        let session = self.inner.sessions.get().await?;
+        library::list_liked(&session).await
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached, or
+    /// [`SpsyncError::Json`] if the manifest on disk is malformed.
+    pub async fn sync_diff(&self) -> Result<Diff, SpsyncError> {
+        let remote = self.list_liked().await?;
+        let manifest = self.manifest()?;
+
+        Ok(diff::diff(&remote, &manifest))
     }
 }
