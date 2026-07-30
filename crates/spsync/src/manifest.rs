@@ -9,10 +9,22 @@ use serde::{Deserialize, Serialize};
 use crate::error::SpsyncError;
 
 pub(crate) const MANIFEST_FILE: &str = "manifest.json";
+pub const MANIFEST_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
+    pub version: u32,
+    #[serde(default)]
     pub entries: BTreeMap<String, Entry>,
+}
+
+impl Default for Manifest {
+    fn default() -> Self {
+        Self {
+            version: MANIFEST_VERSION,
+            entries: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,11 +40,21 @@ impl Manifest {
     /// Returns [`SpsyncError::Io`] if the file exists but cannot be read, or
     /// [`SpsyncError::Json`] if it is not valid manifest json.
     pub fn load(path: &Path) -> Result<Self, SpsyncError> {
-        match fs::read(path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(e.into()),
+        };
+
+        let manifest: Self = serde_json::from_slice(&bytes)?;
+        if manifest.version > MANIFEST_VERSION {
+            return Err(SpsyncError::ManifestVersion {
+                found: manifest.version,
+                supported: MANIFEST_VERSION,
+            });
         }
+
+        Ok(manifest)
     }
 
     /// # Errors
