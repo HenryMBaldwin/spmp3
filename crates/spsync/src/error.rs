@@ -22,4 +22,7 @@ pub enum SpsyncError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("manifest json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
