@@ -9,6 +9,26 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+common = { path = "../common" }
+librespot-audio = { version = "0.8.0", default-features = false, features = [
+  "rustls-tls-webpki-roots",
+] }
+librespot-core = { version = "0.8.0", default-features = false, features = [
+  "rustls-tls-webpki-roots",
+] }
+librespot-metadata = { version = "0.8.0", default-features = false, features = [
+  "rustls-tls-webpki-roots",
+] }
+librespot-oauth = { version = "0.8.0", default-features = false, features = [
+  "rustls-tls-webpki-roots",
+] }
+thiserror = "2.0.19"
+tokio = { version = "1.48.0", features = ["rt", "sync"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [lints]
 workspace = true
