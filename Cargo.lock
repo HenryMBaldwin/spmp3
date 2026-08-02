@@ -1262,6 +1262,16 @@ dependencies = [
 [[package]]
 name = "mp3sync"
 version = "0.0.0"
+dependencies = [
+ "common",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "nonzero_ext"

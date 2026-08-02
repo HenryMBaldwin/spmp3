@@ -9,6 +9,16 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+common = { path = "../common" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+thiserror = "2.0.19"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.24.0"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [lints]
 workspace = true
