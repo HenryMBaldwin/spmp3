@@ -4,7 +4,6 @@ mod diff;
 mod download;
 mod error;
 mod library;
-mod manifest;
 mod session;
 mod sync;
 mod track;
@@ -20,11 +19,13 @@ pub use crate::{
     diff::{Diff, Removed},
     download::{Cover, TrackAudio, TrackMeta},
     error::SpsyncError,
-    manifest::{Entry, Manifest},
     sync::{Failure, SyncReport},
     track::TrackRef,
 };
-use crate::{manifest::MANIFEST_FILE, session::SessionManager};
+use common::manifest::MANIFEST_FILE;
+pub use common::manifest::{Entry, Manifest};
+
+use crate::session::SessionManager;
 
 #[derive(Clone)]
 pub struct Client {
@@ -100,9 +101,9 @@ impl Client {
 
     /// # Errors
     ///
-    /// Returns [`SpsyncError::Json`] if the manifest on disk is malformed.
+    /// Returns [`SpsyncError::Manifest`] if the manifest on disk is malformed.
     pub fn manifest(&self) -> Result<Manifest, SpsyncError> {
-        Manifest::load(&self.manifest_path())
+        Ok(Manifest::load(&self.manifest_path())?)
     }
 
     /// # Errors
@@ -128,7 +129,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached, or
-    /// [`SpsyncError::Json`] if the manifest on disk is malformed.
+    /// [`SpsyncError::Manifest`] if the manifest on disk is malformed.
     pub async fn sync_diff(&self) -> Result<Diff, SpsyncError> {
         let remote = self.list_liked().await?;
         let manifest = self.manifest()?;

@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 
-use crate::{
-    manifest::{Entry, Manifest},
-    track::TrackRef,
-};
+use common::manifest::{Entry, Manifest};
+
+use crate::track::TrackRef;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Diff {
@@ -59,7 +58,7 @@ pub(crate) fn diff(remote: &[TrackRef], manifest: &Manifest) -> Diff {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Manifest, TrackRef, diff};
+    use super::{Entry, Manifest, TrackRef, diff};
 
     fn track(id: &str) -> TrackRef {
         TrackRef {
@@ -78,11 +77,13 @@ mod tests {
         for id in ids {
             manifest.entries.insert(
                 (*id).to_owned(),
-                crate::manifest::Entry {
+                Entry {
                     uri: format!("spotify:track:{id}"),
                     path: PathBuf::from(format!("{id}.mp3")),
                     added_at: Some(1),
                     liked,
+                    artist: "artist".to_owned(),
+                    album: "album".to_owned(),
                     source_format: "OGG_VORBIS_320".to_owned(),
                     encoder: "lame-vbr-v0".to_owned(),
                 },

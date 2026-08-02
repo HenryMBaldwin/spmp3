@@ -10,10 +10,11 @@ use id3::{
     frame::{Picture, PictureType},
 };
 
+use common::manifest::{Entry, MANIFEST_FILE, Manifest};
+
 use crate::{
-    Client, Entry, Manifest, Removed, SpsyncError, TrackRef,
+    Client, Removed, SpsyncError, TrackRef,
     download::{Cover, TrackMeta},
-    manifest::MANIFEST_FILE,
     transcode,
 };
 
@@ -187,6 +188,8 @@ impl Client {
                 path: relative,
                 added_at: track.added_at,
                 liked: true,
+                artist: meta.artists.first().cloned().unwrap_or_default(),
+                album: meta.album.clone(),
                 source_format,
                 encoder: transcode::ENCODER.to_owned(),
             },
@@ -246,7 +249,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached, or
-    /// [`SpsyncError::Json`] if the manifest on disk is malformed.
+    /// [`SpsyncError::Manifest`] if the manifest on disk is malformed.
     pub async fn sync_library(&self) -> Result<SyncReport, SpsyncError> {
         let diff = self.sync_diff().await?;
         let library_dir = &self.config().library_dir;
@@ -333,6 +336,8 @@ mod tests {
             path: PathBuf::from(format!("{id}.mp3")),
             added_at: Some(1),
             liked,
+            artist: "artist".to_owned(),
+            album: "album".to_owned(),
             source_format: "OGG_VORBIS_320".to_owned(),
             encoder: "lame-vbr-v0".to_owned(),
         }
