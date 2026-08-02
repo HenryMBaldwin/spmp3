@@ -1,38 +1,15 @@
 use std::path::PathBuf;
 
-use common::manifest::Entry;
+use common::{manifest::Entry, path::sanitize_component};
 
 pub(crate) const MUSIC_DIR: &str = "Music";
 const UNKNOWN_ARTIST: &str = "Unknown Artist";
 const UNKNOWN_ALBUM: &str = "Unknown Album";
 const MAX_COMPONENT: usize = 64;
 
-fn sanitize(value: &str, fallback: &str) -> String {
-    let cleaned: String = value
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-
-    let trimmed = cleaned.trim().trim_matches('.');
-    let truncated: String = trimmed.chars().take(MAX_COMPONENT).collect();
-    let truncated = truncated.trim_end();
-
-    if truncated.is_empty() {
-        fallback.to_owned()
-    } else {
-        truncated.to_owned()
-    }
-}
-
 pub(crate) fn device_path(entry: &Entry) -> PathBuf {
-    let artist = sanitize(&entry.artist, UNKNOWN_ARTIST);
-    let album = sanitize(&entry.album, UNKNOWN_ALBUM);
+    let artist = sanitize_component(&entry.artist, MAX_COMPONENT, UNKNOWN_ARTIST);
+    let album = sanitize_component(&entry.album, MAX_COMPONENT, UNKNOWN_ALBUM);
 
     let file = entry
         .path
