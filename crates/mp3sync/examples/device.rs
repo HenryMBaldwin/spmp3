@@ -24,6 +24,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("  + {}", step.to.display());
     }
 
+    if std::env::args().any(|a| a == "--reconcile") {
+        let report = syncer.reconcile()?;
+        println!(
+            "reconciled: {} found, {} missing, {} orphans",
+            report.found,
+            report.missing,
+            report.orphans.len()
+        );
+        for orphan in report.orphans.iter().take(5) {
+            println!("  ? {}", orphan.display());
+        }
+        println!("needs sync now: {}", syncer.needs_sync()?);
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--apply") {
         let report = syncer.sync()?;
         println!(

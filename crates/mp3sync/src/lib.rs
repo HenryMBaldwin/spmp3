@@ -4,7 +4,11 @@ mod layout;
 mod plan;
 mod state;
 
-use std::fs;
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use common::manifest::{MANIFEST_FILE, Manifest};
 
@@ -14,6 +18,14 @@ pub use crate::{
     plan::{Copy, Plan, Rename},
     state::{DeviceEntry, DeviceState},
 };
+use crate::{layout::MUSIC_DIR, layout::device_path};
+
+#[derive(Debug, Default)]
+pub struct ReconcileReport {
+    pub found: usize,
+    pub missing: usize,
+    pub orphans: Vec<PathBuf>,
+}
 
 #[derive(Debug, Default)]
 pub struct SyncReport {
@@ -85,6 +97,7 @@ impl Syncer {
         let mut state = self.state()?;
         let steps = plan::plan(&manifest, &state);
         let mut report = SyncReport::default();
+        let music_root = self.config.mount_dir.join(MUSIC_DIR);
 
         for step in &steps.copy {
             let to = self.config.mount_dir.join(&step.to);
@@ -114,6 +127,9 @@ impl Syncer {
 
             match Self::move_file(&from, &to) {
                 Ok(()) => {
+                    if let Some(parent) = from.parent() {
+                        Self::prune_empty_dirs(&music_root, parent);
+                    }
                     if let Some(existing) = state.entries.get_mut(&step.id) {
                         existing.path.clone_from(&step.to);
                     }
@@ -136,6 +152,10 @@ impl Syncer {
                 tracing::warn!(path = %absolute.display(), error = %e, "could not delete");
             }
 
+            if let Some(parent) = absolute.parent() {
+                Self::prune_empty_dirs(&music_root, parent);
+            }
+
             state.entries.retain(|_, entry| entry.path != *path);
             state.save(&self.config.device_state)?;
             report.deleted += 1;
@@ -151,6 +171,109 @@ impl Syncer {
                 "leaving source hash unstamped so the next run retries"
             );
         }
+
+        Ok(report)
+    }
+
+    fn prune_empty_dirs(stop_at: &Path, start: &Path) {
+        let mut current = start.to_path_buf();
+
+        while current.starts_with(stop_at) && current != stop_at {
+            let empty = fs::read_dir(&current).is_ok_and(|mut entries| entries.next().is_none());
+            if !empty {
+                break;
+            }
+
+            if fs::remove_dir(&current).is_err() {
+                break;
+            }
+
+            tracing::debug!(dir = %current.display(), "pruned empty directory");
+            match current.parent() {
+                Some(parent) => current = parent.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+
+    fn device_files(root: &Path) -> Result<Vec<PathBuf>, Mp3syncError> {
+        let mut found = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+
+        while let Some(dir) = stack.pop() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+
+            for entry in entries {
+                let path = entry?.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "mp3") {
+                    found.push(path);
+                }
+            }
+        }
+
+        Ok(found)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`Mp3syncError::DeviceNotMounted`] if the mount point is missing.
+    pub fn reconcile(&self) -> Result<ReconcileReport, Mp3syncError> {
+        if !self.config.mount_dir.is_dir() {
+            return Err(Mp3syncError::DeviceNotMounted {
+                path: self.config.mount_dir.clone(),
+            });
+        }
+
+        let manifest = self.manifest()?;
+        let expected: HashMap<PathBuf, (&String, PathBuf)> = manifest
+            .entries
+            .iter()
+            .map(|(id, entry)| (device_path(entry), (id, entry.path.clone())))
+            .collect();
+
+        let mut state = DeviceState::default();
+        let mut report = ReconcileReport::default();
+
+        for absolute in Self::device_files(&self.config.mount_dir.join(MUSIC_DIR))? {
+            let Ok(relative) = absolute.strip_prefix(&self.config.mount_dir) else {
+                continue;
+            };
+
+            if let Some((id, library_path)) = expected.get(relative) {
+                state.entries.insert(
+                    (*id).clone(),
+                    DeviceEntry {
+                        path: relative.to_path_buf(),
+                        library_path: library_path.clone(),
+                    },
+                );
+                report.found += 1;
+            } else {
+                report.orphans.push(relative.to_path_buf());
+            }
+        }
+
+        let steps = plan::plan(&manifest, &state);
+        report.missing = steps.copy.len() + steps.rename.len();
+
+        if steps.is_empty() && report.orphans.is_empty() {
+            state.source_hash = Some(plan::source_hash(&manifest));
+        }
+
+        state.save(&self.config.device_state)?;
+
+        tracing::info!(
+            found = report.found,
+            missing = report.missing,
+            orphans = report.orphans.len(),
+            "reconciled device state"
+        );
 
         Ok(report)
     }
@@ -175,5 +298,64 @@ impl Syncer {
         fs::rename(from, to)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use std::fs;
+
+    use super::Syncer;
+
+    #[test]
+    fn prunes_nested_empty_dirs_up_to_stop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("Music");
+        let leaf = root.join("Artist").join("Album");
+        fs::create_dir_all(&leaf).expect("create");
+
+        Syncer::prune_empty_dirs(&root, &leaf);
+
+        assert!(!leaf.exists());
+        assert!(!root.join("Artist").exists());
+        assert!(root.exists());
+    }
+
+    #[test]
+    fn stops_pruning_at_first_non_empty_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("Music");
+        let album = root.join("Artist").join("Album");
+        fs::create_dir_all(&album).expect("create");
+        fs::write(root.join("Artist").join("keep.mp3"), b"x").expect("write");
+
+        Syncer::prune_empty_dirs(&root, &album);
+
+        assert!(!album.exists());
+        assert!(root.join("Artist").exists());
+    }
+
+    #[test]
+    fn finds_mp3s_recursively_and_ignores_others() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("Artist").join("Album");
+        fs::create_dir_all(&nested).expect("create");
+        fs::write(nested.join("a.mp3"), b"x").expect("write");
+        fs::write(nested.join("cover.jpg"), b"x").expect("write");
+
+        let found = Syncer::device_files(dir.path()).expect("walk");
+
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("a.mp3"));
+    }
+
+    #[test]
+    fn device_files_tolerates_missing_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let found = Syncer::device_files(&dir.path().join("nope")).expect("walk");
+
+        assert!(found.is_empty());
     }
 }
