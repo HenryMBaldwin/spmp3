@@ -23,11 +23,8 @@ pub enum SpsyncError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("manifest json error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("manifest version {found} is newer than the supported version {supported}")]
-    ManifestVersion { found: u32, supported: u32 },
+    #[error("manifest error: {0}")]
+    Manifest(#[from] common::manifest::ManifestError),
 
     #[error("{uri} is not a track uri")]
     UnsupportedUri { uri: String },

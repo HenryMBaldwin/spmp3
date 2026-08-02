@@ -5,11 +5,22 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::error::SpsyncError;
-
-pub(crate) const MANIFEST_FILE: &str = "manifest.json";
+pub const MANIFEST_FILE: &str = "manifest.json";
 pub const MANIFEST_VERSION: u32 = 1;
+
+#[derive(Debug, Error)]
+pub enum ManifestError {
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("manifest json error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("manifest version {found} is newer than the supported version {supported}")]
+    Version { found: u32, supported: u32 },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -35,6 +46,10 @@ pub struct Entry {
     #[serde(default = "liked_default")]
     pub liked: bool,
     #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: String,
+    #[serde(default)]
     pub source_format: String,
     #[serde(default)]
     pub encoder: String,
@@ -47,9 +62,9 @@ const fn liked_default() -> bool {
 impl Manifest {
     /// # Errors
     ///
-    /// Returns [`SpsyncError::Io`] if the file exists but cannot be read, or
-    /// [`SpsyncError::Json`] if it is not valid manifest json.
-    pub fn load(path: &Path) -> Result<Self, SpsyncError> {
+    /// Returns [`ManifestError`] if the file exists but cannot be read or parsed, or if
+    /// it was written by a newer version of this crate.
+    pub fn load(path: &Path) -> Result<Self, ManifestError> {
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -58,7 +73,7 @@ impl Manifest {
 
         let manifest: Self = serde_json::from_slice(&bytes)?;
         if manifest.version > MANIFEST_VERSION {
-            return Err(SpsyncError::ManifestVersion {
+            return Err(ManifestError::Version {
                 found: manifest.version,
                 supported: MANIFEST_VERSION,
             });
@@ -69,8 +84,8 @@ impl Manifest {
 
     /// # Errors
     ///
-    /// Returns [`SpsyncError::Io`] if the manifest cannot be written or renamed.
-    pub fn save(&self, path: &Path) -> Result<(), SpsyncError> {
+    /// Returns [`ManifestError::Io`] if the manifest cannot be written or renamed.
+    pub fn save(&self, path: &Path) -> Result<(), ManifestError> {
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
         fs::rename(&tmp, path)?;
@@ -88,5 +103,9 @@ impl Manifest {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    pub fn liked(&self) -> impl Iterator<Item = (&String, &Entry)> {
+        self.entries.iter().filter(|(_, entry)| entry.liked)
     }
 }
