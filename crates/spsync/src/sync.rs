@@ -10,7 +10,10 @@ use id3::{
     frame::{Picture, PictureType},
 };
 
-use common::manifest::{Entry, MANIFEST_FILE, Manifest};
+use common::{
+    manifest::{Entry, MANIFEST_FILE, Manifest},
+    path::sanitize_component,
+};
 
 use crate::{
     Client, Removed, SpsyncError, TrackRef,
@@ -34,33 +37,13 @@ pub struct Failure {
     pub error: String,
 }
 
-fn sanitize(value: &str) -> String {
-    let cleaned: String = value
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-
-    cleaned.trim().trim_matches('.').to_owned()
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    value.char_indices().take(max).map(|(_, c)| c).collect()
-}
-
 fn file_name(meta: &TrackMeta, id: &str, taken: &HashSet<PathBuf>) -> PathBuf {
     let artist = meta
         .artists
         .first()
         .map_or("Unknown Artist", String::as_str);
 
-    let stem = truncate(&sanitize(&format!("{artist} - {}", meta.title)), MAX_STEM);
-    let stem = if stem.is_empty() { "untitled" } else { &stem };
+    let stem = sanitize_component(&format!("{artist} - {}", meta.title), MAX_STEM, "untitled");
 
     let candidate = PathBuf::from(format!("{stem}.mp3"));
     if taken.contains(&candidate) {
@@ -290,7 +273,7 @@ mod tests {
 
     use super::{
         Entry, Manifest, Removed, TrackMeta, TrackRef, apply_removals, apply_restores, file_name,
-        partition_restores, sanitize,
+        partition_restores,
     };
 
     fn meta(artist: &str, title: &str) -> TrackMeta {
@@ -302,12 +285,6 @@ mod tests {
             disc_number: None,
             duration_ms: 0,
         }
-    }
-
-    #[test]
-    fn strips_path_separators() {
-        assert_eq!(sanitize("AC/DC"), "AC_DC");
-        assert_eq!(sanitize("a:b*c?"), "a_b_c_");
     }
 
     #[test]
