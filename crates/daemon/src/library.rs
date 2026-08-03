@@ -32,6 +32,7 @@ pub(crate) async fn run(client: Client, interval: Duration, mut shutdown: watch:
                     added = report.added,
                     restored = report.restored,
                     removed = report.removed,
+                    missing_covers = report.missing_covers,
                     failed = report.failed.len(),
                     "library sync finished"
                 ),

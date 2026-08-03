@@ -44,6 +44,7 @@ pub struct TrackAudio {
     pub meta: TrackMeta,
     pub format: AudioFileFormat,
     pub cover: Option<Cover>,
+    pub cover_error: Option<String>,
 }
 
 impl std::fmt::Debug for TrackAudio {
@@ -53,6 +54,7 @@ impl std::fmt::Debug for TrackAudio {
             .field("meta", &self.meta)
             .field("format", &self.format)
             .field("cover", &self.cover)
+            .field("cover_error", &self.cover_error)
             .finish()
     }
 }
@@ -67,27 +69,25 @@ fn sniff_mime(data: &[u8]) -> Option<&'static str> {
     }
 }
 
-async fn fetch_cover(session: &Session, item: &AudioItem) -> Option<Cover> {
-    let cover = item.covers.first()?;
-
-    let bytes = match session.spclient().request_url(&cover.url).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::warn!(url = %cover.url, error = %e, "could not fetch cover art");
-            return None;
-        }
+async fn fetch_cover(session: &Session, item: &AudioItem) -> Result<Option<Cover>, String> {
+    let Some(cover) = item.covers.first() else {
+        return Ok(None);
     };
+
+    let bytes = session
+        .spclient()
+        .request_url(&cover.url)
+        .await
+        .map_err(|e| format!("could not fetch cover art from {}: {e}", cover.url))?;
 
     let data = bytes.to_vec();
-    let Some(mime) = sniff_mime(&data) else {
-        tracing::warn!(url = %cover.url, "cover art is not jpeg or png, skipping");
-        return None;
-    };
+    let mime = sniff_mime(&data)
+        .ok_or_else(|| format!("cover art at {} is neither jpeg nor png", cover.url))?;
 
-    Some(Cover {
+    Ok(Some(Cover {
         data,
         mime: mime.to_owned(),
-    })
+    }))
 }
 
 fn stream_data_rate(format: AudioFileFormat) -> usize {
@@ -194,7 +194,10 @@ pub(crate) async fn download(
 ) -> Result<TrackAudio, SpsyncError> {
     let item = AudioItem::get_file(session, uri.clone()).await?;
     let meta = meta_from(&item);
-    let cover = fetch_cover(session, &item).await;
+    let (cover, cover_error) = match fetch_cover(session, &item).await {
+        Ok(cover) => (cover, None),
+        Err(e) => (None, Some(e)),
+    };
 
     let item = resolve_playable(session, item).await?;
     let (format, file_id) =
@@ -231,5 +234,6 @@ pub(crate) async fn download(
         meta,
         format,
         cover,
+        cover_error,
     })
 }
