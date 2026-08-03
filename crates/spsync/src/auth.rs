@@ -12,14 +12,14 @@ const OAUTH_SCOPES: &[&str] = &[
     "playlist-read-collaborative",
 ];
 
-pub(crate) const DEFAULT_OAUTH_PORT: u16 = 5588;
-
 pub(crate) async fn interactive_login(
     client_id: String,
+    redirect_host: &str,
     port: u16,
     open_browser: bool,
 ) -> Result<Credentials, SpsyncError> {
-    let redirect_uri = format!("http://127.0.0.1:{port}/login");
+    let redirect_uri = format!("http://{redirect_host}:{port}/login");
+    tracing::info!(redirect_uri = %redirect_uri, "starting oauth flow");
 
     let token = tokio::task::spawn_blocking(move || {
         let mut builder = OAuthClientBuilder::new(&client_id, &redirect_uri, OAUTH_SCOPES.to_vec());

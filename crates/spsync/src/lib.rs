@@ -74,8 +74,13 @@ impl Client {
     /// [`SpsyncError::Spotify`] if Spotify rejects the resulting token.
     pub async fn login(&self, open_browser: bool) -> Result<String, SpsyncError> {
         let client_id = self.inner.sessions.client_id();
-        let credentials =
-            auth::interactive_login(client_id, auth::DEFAULT_OAUTH_PORT, open_browser).await?;
+        let credentials = auth::interactive_login(
+            client_id,
+            &self.inner.config.oauth_redirect_host,
+            self.inner.config.oauth_port,
+            open_browser,
+        )
+        .await?;
         let session = self.inner.sessions.replace(credentials).await?;
 
         Ok(session.username())
