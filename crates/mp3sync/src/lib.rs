@@ -22,6 +22,7 @@ use crate::{layout::MUSIC_DIR, layout::device_path};
 
 #[derive(Debug, Default)]
 pub struct ReconcileReport {
+    pub previously_recorded: usize,
     pub found: usize,
     pub missing: usize,
     pub orphans: Vec<PathBuf>,
@@ -243,7 +244,10 @@ impl Syncer {
             .collect();
 
         let mut state = DeviceState::default();
-        let mut report = ReconcileReport::default();
+        let mut report = ReconcileReport {
+            previously_recorded: self.state()?.entries.len(),
+            ..ReconcileReport::default()
+        };
 
         for absolute in Self::device_files(&self.config.mount_dir.join(MUSIC_DIR))? {
             let Ok(relative) = absolute.strip_prefix(&self.config.mount_dir) else {
@@ -274,6 +278,7 @@ impl Syncer {
         state.save(&self.config.device_state)?;
 
         tracing::info!(
+            previously_recorded = report.previously_recorded,
             found = report.found,
             missing = report.missing,
             orphans = report.orphans.len(),
