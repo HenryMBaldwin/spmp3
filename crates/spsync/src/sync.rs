@@ -22,6 +22,25 @@ use crate::{
 };
 
 const MAX_STEM: usize = 120;
+const PARTIAL_EXTENSION: &str = "mp3.part";
+
+fn sweep_partials(library_dir: &std::path::Path) -> usize {
+    let Ok(entries) = fs::read_dir(library_dir) else {
+        return 0;
+    };
+
+    let mut swept = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "part") && fs::remove_file(&path).is_ok() {
+            tracing::warn!(path = %path.display(), "removed partial download");
+            swept += 1;
+        }
+    }
+
+    swept
+}
 
 #[derive(Debug, Default)]
 pub struct SyncReport {
@@ -161,9 +180,11 @@ impl Client {
 
         let relative = file_name(&meta, &track.id, taken);
         let absolute = self.config().library_dir.join(&relative);
+        let partial = absolute.with_extension(PARTIAL_EXTENSION);
 
-        fs::write(&absolute, &mp3)?;
-        write_tags(&absolute, &meta, cover.as_ref())?;
+        fs::write(&partial, &mp3)?;
+        write_tags(&partial, &meta, cover.as_ref())?;
+        fs::rename(&partial, &absolute)?;
 
         Ok((
             Entry {
@@ -185,6 +206,8 @@ impl Client {
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached. Per-track
     /// failures are collected into the report rather than aborting the run.
     pub async fn sync_tracks(&self, tracks: &[TrackRef]) -> Result<SyncReport, SpsyncError> {
+        sweep_partials(&self.config().library_dir);
+
         let mut manifest = self.manifest()?;
         let manifest_path = self.config().library_dir.join(MANIFEST_FILE);
 
@@ -273,7 +296,7 @@ mod tests {
 
     use super::{
         Entry, Manifest, Removed, TrackMeta, TrackRef, apply_removals, apply_restores, file_name,
-        partition_restores,
+        partition_restores, sweep_partials,
     };
 
     fn meta(artist: &str, title: &str) -> TrackMeta {
@@ -381,6 +404,37 @@ mod tests {
 
         assert!(dir.path().join("a.mp3").is_file());
         assert!(!manifest.entries["a"].liked);
+    }
+
+    #[test]
+    fn sweeps_partial_downloads_and_keeps_finished_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.mp3.part"), b"partial").expect("write");
+        fs::write(dir.path().join("b.mp3.part"), b"partial").expect("write");
+        fs::write(dir.path().join("c.mp3"), b"done").expect("write");
+
+        assert_eq!(sweep_partials(dir.path()), 2);
+
+        assert!(!dir.path().join("a.mp3.part").exists());
+        assert!(!dir.path().join("b.mp3.part").exists());
+        assert!(dir.path().join("c.mp3").is_file());
+    }
+
+    #[test]
+    fn sweep_tolerates_missing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(sweep_partials(&dir.path().join("nope")), 0);
+    }
+
+    #[test]
+    fn partial_extension_appends_rather_than_replaces() {
+        let target = PathBuf::from("/lib/Artist - Song 1.5.mp3");
+
+        assert_eq!(
+            target.with_extension(super::PARTIAL_EXTENSION),
+            PathBuf::from("/lib/Artist - Song 1.5.mp3.part")
+        );
     }
 
     #[test]
