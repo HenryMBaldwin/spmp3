@@ -7,4 +7,4 @@ offline syncing to an mp3 player.
 
 1. spsync - tracks spotify library and maintains a local copy
 2. mp3sync - manages mp3 syncing and tracks diff between lib and most recent syn
-3. server - primary binary
+3. daemon - primary binary
