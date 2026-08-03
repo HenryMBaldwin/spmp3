@@ -146,10 +146,15 @@ impl Syncer {
 
         for path in &steps.delete {
             let absolute = self.config.mount_dir.join(path);
+
             if let Err(e) = fs::remove_file(&absolute)
                 && e.kind() != std::io::ErrorKind::NotFound
             {
-                tracing::warn!(path = %absolute.display(), error = %e, "could not delete");
+                report.failed.push(Failure {
+                    path: path.clone(),
+                    error: e.to_string(),
+                });
+                continue;
             }
 
             if let Some(parent) = absolute.parent() {

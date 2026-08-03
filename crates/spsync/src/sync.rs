@@ -24,22 +24,19 @@ use crate::{
 const MAX_STEM: usize = 120;
 const PARTIAL_EXTENSION: &str = "mp3.part";
 
-fn sweep_partials(library_dir: &std::path::Path) -> usize {
-    let Ok(entries) = fs::read_dir(library_dir) else {
-        return 0;
-    };
-
+fn sweep_partials(library_dir: &std::path::Path) -> Result<usize, SpsyncError> {
     let mut swept = 0;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "part") && fs::remove_file(&path).is_ok() {
+    for entry in fs::read_dir(library_dir)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|e| e == "part") {
+            fs::remove_file(&path)?;
             tracing::warn!(path = %path.display(), "removed partial download");
             swept += 1;
         }
     }
 
-    swept
+    Ok(swept)
 }
 
 #[derive(Debug, Default)]
@@ -47,6 +44,7 @@ pub struct SyncReport {
     pub added: usize,
     pub restored: usize,
     pub removed: usize,
+    pub missing_covers: usize,
     pub failed: Vec<Failure>,
 }
 
@@ -109,28 +107,48 @@ fn apply_restores(manifest: &mut Manifest, ids: &[String]) -> usize {
     restored
 }
 
+#[derive(Debug, Default)]
+pub struct Removals {
+    pub removed: usize,
+    pub failed: Vec<Failure>,
+}
+
 fn apply_removals(
     manifest: &mut Manifest,
     removed: &[Removed],
     library_dir: &std::path::Path,
     preserve: bool,
-) -> usize {
+) -> Removals {
+    let mut result = Removals::default();
+
     for entry in removed {
         if preserve {
             if let Some(existing) = manifest.entries.get_mut(&entry.id) {
                 existing.liked = false;
             }
             tracing::info!(id = %entry.id, "unliked, keeping local file");
-        } else {
-            let path = library_dir.join(&entry.entry.path);
-            if let Err(e) = fs::remove_file(&path) {
-                tracing::warn!(path = %path.display(), error = %e, "could not remove file");
+            result.removed += 1;
+            continue;
+        }
+
+        let path = library_dir.join(&entry.entry.path);
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                manifest.entries.remove(&entry.id);
+                result.removed += 1;
             }
-            manifest.entries.remove(&entry.id);
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                manifest.entries.remove(&entry.id);
+                result.removed += 1;
+            }
+            Err(e) => result.failed.push(Failure {
+                uri: entry.entry.uri.clone(),
+                error: format!("could not remove {}: {e}", path.display()),
+            }),
         }
     }
 
-    removed.len()
+    result
 }
 
 fn write_tags(
@@ -169,10 +187,11 @@ impl Client {
         &self,
         track: &TrackRef,
         taken: &HashSet<PathBuf>,
-    ) -> Result<(Entry, Duration), SpsyncError> {
+    ) -> Result<(Entry, Duration, Option<String>), SpsyncError> {
         let audio = self.download(track).await?;
         let source_format = format!("{:?}", audio.format);
-        let (meta, cover, ogg) = (audio.meta, audio.cover, audio.ogg);
+        let (meta, cover, ogg, cover_error) =
+            (audio.meta, audio.cover, audio.ogg, audio.cover_error);
 
         let mp3 = tokio::task::spawn_blocking(move || transcode::ogg_to_mp3(ogg))
             .await
@@ -198,6 +217,7 @@ impl Client {
                 encoder: transcode::ENCODER.to_owned(),
             },
             Duration::from_millis(u64::from(meta.duration_ms)),
+            cover_error,
         ))
     }
 
@@ -206,7 +226,7 @@ impl Client {
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached. Per-track
     /// failures are collected into the report rather than aborting the run.
     pub async fn sync_tracks(&self, tracks: &[TrackRef]) -> Result<SyncReport, SpsyncError> {
-        sweep_partials(&self.config().library_dir);
+        sweep_partials(&self.config().library_dir)?;
 
         let mut manifest = self.manifest()?;
         let manifest_path = self.config().library_dir.join(MANIFEST_FILE);
@@ -219,7 +239,11 @@ impl Client {
             let started = Instant::now();
 
             match self.sync_one(track, &taken).await {
-                Ok((entry, duration)) => {
+                Ok((entry, duration, cover_error)) => {
+                    if let Some(e) = cover_error {
+                        tracing::warn!(uri = %track.uri, error = %e, "cover art unavailable");
+                        report.missing_covers += 1;
+                    }
                     tracing::info!(
                         uri = %track.uri,
                         path = %entry.path.display(),
@@ -274,12 +298,14 @@ impl Client {
 
         let mut manifest = self.manifest()?;
         report.restored = apply_restores(&mut manifest, &restorable);
-        report.removed = apply_removals(
+        let removals = apply_removals(
             &mut manifest,
             &diff.remove,
             library_dir,
             self.config().preserve,
         );
+        report.removed = removals.removed;
+        report.failed.extend(removals.failed);
         manifest.save(&library_dir.join(MANIFEST_FILE))?;
 
         Ok(report)
@@ -400,10 +426,39 @@ mod tests {
             entry: entry("a", true),
         }];
 
-        assert_eq!(apply_removals(&mut manifest, &removed, dir.path(), true), 1);
+        let result = apply_removals(&mut manifest, &removed, dir.path(), true);
 
+        assert_eq!(result.removed, 1);
+        assert!(result.failed.is_empty());
         assert!(dir.path().join("a.mp3").is_file());
         assert!(!manifest.entries["a"].liked);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn undeletable_file_is_reported_and_entry_kept() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, mut manifest) = library(&[("a", true)], true);
+        let removed = vec![Removed {
+            id: "a".to_owned(),
+            entry: entry("a", true),
+        }];
+
+        let mut perms = fs::metadata(dir.path()).expect("metadata").permissions();
+        perms.set_mode(0o555);
+        fs::set_permissions(dir.path(), perms).expect("chmod");
+
+        let result = apply_removals(&mut manifest, &removed, dir.path(), false);
+
+        let mut perms = fs::metadata(dir.path()).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(dir.path(), perms).expect("restore chmod");
+
+        assert_eq!(result.removed, 0);
+        assert_eq!(result.failed.len(), 1);
+        assert!(manifest.entries.contains_key("a"));
+        assert!(dir.path().join("a.mp3").is_file());
     }
 
     #[test]
@@ -413,7 +468,7 @@ mod tests {
         fs::write(dir.path().join("b.mp3.part"), b"partial").expect("write");
         fs::write(dir.path().join("c.mp3"), b"done").expect("write");
 
-        assert_eq!(sweep_partials(dir.path()), 2);
+        assert_eq!(sweep_partials(dir.path()).expect("sweep"), 2);
 
         assert!(!dir.path().join("a.mp3.part").exists());
         assert!(!dir.path().join("b.mp3.part").exists());
@@ -421,10 +476,10 @@ mod tests {
     }
 
     #[test]
-    fn sweep_tolerates_missing_directory() {
+    fn sweep_reports_unreadable_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        assert_eq!(sweep_partials(&dir.path().join("nope")), 0);
+        assert!(sweep_partials(&dir.path().join("nope")).is_err());
     }
 
     #[test]
@@ -445,11 +500,10 @@ mod tests {
             entry: entry("a", true),
         }];
 
-        assert_eq!(
-            apply_removals(&mut manifest, &removed, dir.path(), false),
-            1
-        );
+        let result = apply_removals(&mut manifest, &removed, dir.path(), false);
 
+        assert_eq!(result.removed, 1);
+        assert!(result.failed.is_empty());
         assert!(!dir.path().join("a.mp3").exists());
         assert!(!manifest.entries.contains_key("a"));
     }
