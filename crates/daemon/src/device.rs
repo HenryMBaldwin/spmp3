@@ -12,7 +12,7 @@ pub(crate) async fn run(syncer: Arc<Syncer>, poll: Duration, mut shutdown: watch
 
     if was_mounted {
         tracing::info!(path = %mount_dir.display(), "device already present at startup");
-        sync(&syncer).await;
+        on_mounted(&syncer).await;
     }
 
     loop {
@@ -25,7 +25,7 @@ pub(crate) async fn run(syncer: Arc<Syncer>, poll: Duration, mut shutdown: watch
 
         if mounted && !was_mounted {
             tracing::info!(path = %mount_dir.display(), "device mounted");
-            sync(&syncer).await;
+            on_mounted(&syncer).await;
         } else if !mounted && was_mounted {
             tracing::info!(path = %mount_dir.display(), "device removed");
         }
@@ -34,6 +34,36 @@ pub(crate) async fn run(syncer: Arc<Syncer>, poll: Duration, mut shutdown: watch
     }
 
     tracing::info!("device loop stopped");
+}
+
+async fn on_mounted(syncer: &Arc<Syncer>) {
+    reconcile(syncer).await;
+    sync(syncer).await;
+}
+
+async fn reconcile(syncer: &Arc<Syncer>) {
+    let syncer = Arc::clone(syncer);
+
+    match tokio::task::spawn_blocking(move || syncer.reconcile()).await {
+        Ok(Ok(report)) if report.previously_recorded == 0 => {
+            tracing::info!(
+                found = report.found,
+                missing = report.missing,
+                "no recorded device state; rebuilt from the device"
+            );
+        }
+        Ok(Ok(report)) if report.missing == 0 && report.orphans.is_empty() => {
+            tracing::debug!(found = report.found, "device contents match recorded state");
+        }
+        Ok(Ok(report)) => tracing::warn!(
+            found = report.found,
+            missing = report.missing,
+            orphans = report.orphans.len(),
+            "device contents did not match recorded state; rebuilt from the device"
+        ),
+        Ok(Err(e)) => tracing::error!(error = %e, "could not reconcile device state"),
+        Err(e) => tracing::error!(error = %e, "reconcile task panicked"),
+    }
 }
 
 async fn sync(syncer: &Arc<Syncer>) {
