@@ -22,7 +22,9 @@ librespot-metadata = { version = "0.8.0", default-features = false, features = [
 librespot-oauth = { version = "0.8.0", default-features = false, features = [
   "rustls-tls-webpki-roots",
 ] }
+librespot-protocol = { version = "0.8.0", default-features = false }
 mp3lame-encoder = "0.2.1"
+protobuf = "3"
 symphonia = { version = "0.5.4", default-features = false, features = [
   "ogg",
   "vorbis",

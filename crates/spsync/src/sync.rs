@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
     time::{Duration, Instant},
@@ -19,7 +19,7 @@ use common::{
 use crate::{
     Client, Removed, SpsyncError, TrackRef,
     download::{Cover, TrackMeta},
-    transcode,
+    durations, transcode,
 };
 
 const MAX_STEM: usize = 120;
@@ -78,18 +78,52 @@ fn projected_bytes(downloaded: u64, done: usize, total: usize) -> u64 {
     downloaded / done * total
 }
 
+fn mean(total: Duration, count: usize) -> Duration {
+    u32::try_from(count)
+        .ok()
+        .filter(|count| *count > 0)
+        .map_or(Duration::ZERO, |count| total / count)
+}
+
+/// Length of `tracks[i..]` at each index, charging tracks of unknown length the mean.
+fn suffix_lengths(tracks: &[TrackRef], lengths: &HashMap<String, Duration>) -> Vec<Duration> {
+    let (known, count) = tracks
+        .iter()
+        .filter_map(|track| lengths.get(&track.uri))
+        .fold((Duration::ZERO, 0), |(sum, count), length| {
+            (sum + *length, count + 1)
+        });
+    let fallback = mean(known, count);
+
+    let mut suffix = vec![Duration::ZERO; tracks.len() + 1];
+    for (index, track) in tracks.iter().enumerate().rev() {
+        let length = lengths.get(&track.uri).copied().unwrap_or(fallback);
+        suffix[index] = suffix[index + 1] + length;
+    }
+
+    suffix
+}
+
 fn remaining_estimate(
     realtime: bool,
     elapsed: Duration,
+    work_time: Duration,
     track_time: Duration,
+    remaining_length: Option<Duration>,
     done: usize,
-    total: usize,
+    remaining: usize,
 ) -> Duration {
-    let left = u64::try_from(total.saturating_sub(done)).unwrap_or(0);
-    let done = u64::try_from(done).unwrap_or(1).max(1);
-    let per_track = if realtime { track_time } else { elapsed };
+    let left = u32::try_from(remaining).unwrap_or(0);
+    let per_track = |total: Duration| mean(total, done) * left;
 
-    Duration::from_secs(per_track.as_secs() / done * left)
+    if !realtime {
+        return per_track(elapsed);
+    }
+
+    match remaining_length {
+        Some(length) => length + per_track(work_time),
+        None => per_track(track_time),
+    }
 }
 const PARTIAL_EXTENSION: &str = "mp3.part";
 
@@ -296,6 +330,26 @@ impl Client {
         })
     }
 
+    async fn track_lengths(
+        &self,
+        tracks: &[TrackRef],
+    ) -> Result<HashMap<String, Duration>, SpsyncError> {
+        if tracks.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let lengths = durations::fetch(&self.session().await?, tracks).await;
+        if !lengths.is_empty() && lengths.len() < tracks.len() {
+            tracing::warn!(
+                resolved = lengths.len(),
+                tracks = tracks.len(),
+                "some track lengths are unresolved; the estimate charges them the mean"
+            );
+        }
+
+        Ok(lengths)
+    }
+
     /// # Errors
     ///
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached. Per-track
@@ -310,15 +364,21 @@ impl Client {
         let mut taken: HashSet<PathBuf> =
             manifest.entries.values().map(|e| e.path.clone()).collect();
 
+        let lengths = self.track_lengths(tracks).await?;
+        let suffix = suffix_lengths(tracks, &lengths);
+        let known_lengths = !lengths.is_empty();
+
         let run_started = Instant::now();
         let mut library_size = library_bytes(&self.config().library_dir);
         let mut downloaded_bytes: u64 = 0;
         let mut downloaded_time = Duration::ZERO;
+        let mut work_time = Duration::ZERO;
 
         tracing::info!(
             tracks = tracks.len(),
             realtime = self.config().realtime,
             library = %human_bytes(library_size),
+            length = %human_duration(suffix.first().copied().unwrap_or(Duration::ZERO)),
             "starting library sync"
         );
 
@@ -331,6 +391,9 @@ impl Client {
 
             match self.sync_one(track, &taken).await {
                 Ok(done) => {
+                    let took = started.elapsed();
+                    work_time += took;
+
                     if let Some(e) = done.cover_error {
                         tracing::warn!(uri = %track.uri, error = %e, "cover art unavailable");
                         report.missing_covers += 1;
@@ -345,16 +408,18 @@ impl Client {
                     tracing::info!(
                         progress = %progress,
                         track = %done.entry.path.display(),
-                        took = %human_duration(started.elapsed()),
+                        took = %human_duration(took),
                         size = %human_bytes(bytes),
                         library = %human_bytes(library_size),
                         projected = %human_bytes(projected_bytes(downloaded_bytes, report.added, tracks.len())),
                         eta = %human_duration(remaining_estimate(
                             self.config().realtime,
                             run_started.elapsed(),
+                            work_time,
                             downloaded_time,
-                            report.added,
-                            tracks.len(),
+                            known_lengths.then(|| suffix[position]),
+                            position,
+                            tracks.len() - position,
                         )),
                         "downloaded"
                     );
@@ -364,7 +429,7 @@ impl Client {
                     manifest.save(&manifest_path)?;
 
                     if self.config().realtime && position < tracks.len() {
-                        let remaining = done.track_duration.saturating_sub(started.elapsed());
+                        let remaining = done.track_duration.saturating_sub(took);
                         if !remaining.is_zero() {
                             tracing::info!(
                                 waiting = %human_duration(remaining),
@@ -376,6 +441,7 @@ impl Client {
                     }
                 }
                 Err(e) => {
+                    work_time += started.elapsed();
                     tracing::warn!(progress = %progress, uri = %track.uri, error = %e, "track failed");
                     report.failed.push(Failure {
                         uri: track.uri.clone(),
@@ -437,14 +503,19 @@ impl Client {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
+    use std::{
+        collections::{HashMap, HashSet},
+        fs,
+        path::PathBuf,
+        time::Duration,
+    };
 
     use tempfile::TempDir;
 
     use super::{
         Entry, Manifest, Removed, TrackMeta, TrackRef, apply_removals, apply_restores, file_name,
         human_bytes, human_duration, partition_restores, projected_bytes, remaining_estimate,
-        sweep_partials,
+        suffix_lengths, sweep_partials,
     };
 
     fn meta(artist: &str, title: &str) -> TrackMeta {
@@ -480,23 +551,52 @@ mod tests {
     }
 
     #[test]
-    fn estimates_remaining_from_track_length_when_pacing() {
-        let elapsed = Duration::from_secs(10);
-        let track_time = Duration::from_secs(2000);
+    fn estimates_remaining_from_known_lengths_when_pacing() {
+        let remaining_length = Duration::from_secs(20_000);
+        let work_time = Duration::from_secs(50);
 
         assert_eq!(
-            remaining_estimate(true, elapsed, track_time, 10, 110),
+            remaining_estimate(
+                true,
+                Duration::from_secs(10),
+                work_time,
+                Duration::ZERO,
+                Some(remaining_length),
+                10,
+                100,
+            ),
+            Duration::from_secs(20_500)
+        );
+    }
+
+    #[test]
+    fn falls_back_to_average_length_when_lengths_are_unknown() {
+        assert_eq!(
+            remaining_estimate(
+                true,
+                Duration::from_secs(10),
+                Duration::from_secs(50),
+                Duration::from_secs(2000),
+                None,
+                10,
+                100,
+            ),
             Duration::from_secs(20_000)
         );
     }
 
     #[test]
     fn estimates_remaining_from_elapsed_when_not_pacing() {
-        let elapsed = Duration::from_secs(100);
-        let track_time = Duration::from_secs(2000);
-
         assert_eq!(
-            remaining_estimate(false, elapsed, track_time, 10, 110),
+            remaining_estimate(
+                false,
+                Duration::from_secs(100),
+                Duration::from_secs(100),
+                Duration::from_secs(2000),
+                Some(Duration::from_secs(20_000)),
+                10,
+                100,
+            ),
             Duration::from_secs(1000)
         );
     }
@@ -508,11 +608,46 @@ mod tests {
                 true,
                 Duration::from_secs(100),
                 Duration::from_secs(100),
+                Duration::from_secs(100),
+                Some(Duration::ZERO),
                 10,
-                10
+                0,
             ),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn suffix_lengths_run_backwards_from_zero() {
+        let tracks = [track("a"), track("b"), track("c")];
+        let lengths: HashMap<String, Duration> = tracks
+            .iter()
+            .zip([30, 60, 90])
+            .map(|(t, secs)| (t.uri.clone(), Duration::from_secs(secs)))
+            .collect();
+
+        assert_eq!(
+            suffix_lengths(&tracks, &lengths),
+            vec![
+                Duration::from_mins(3),
+                Duration::from_secs(150),
+                Duration::from_secs(90),
+                Duration::ZERO,
+            ]
+        );
+    }
+
+    #[test]
+    fn suffix_lengths_charge_unknown_tracks_the_mean() {
+        let tracks = [track("a"), track("b"), track("c")];
+        let lengths: HashMap<String, Duration> = [
+            (tracks[0].uri.clone(), Duration::from_secs(30)),
+            (tracks[1].uri.clone(), Duration::from_secs(90)),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(suffix_lengths(&tracks, &lengths)[0], Duration::from_mins(3));
     }
 
     #[test]
