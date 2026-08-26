@@ -23,6 +23,74 @@ use crate::{
 };
 
 const MAX_STEM: usize = 120;
+
+struct Downloaded {
+    entry: Entry,
+    track_duration: Duration,
+    cover_error: Option<String>,
+    bytes: usize,
+}
+
+fn human_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d{}h", secs / 86400, (secs % 86400) / 3600)
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const MB: u64 = 1_048_576;
+    const GB: u64 = 1_073_741_824;
+
+    if bytes >= GB {
+        format!("{}.{}GB", bytes / GB, (bytes % GB) * 10 / GB)
+    } else if bytes >= MB {
+        format!("{}.{}MB", bytes / MB, (bytes % MB) * 10 / MB)
+    } else {
+        format!("{}KB", bytes / 1024)
+    }
+}
+
+fn library_bytes(library_dir: &std::path::Path) -> u64 {
+    let Ok(entries) = fs::read_dir(library_dir) else {
+        return 0;
+    };
+
+    entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|e| e == "mp3"))
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+fn projected_bytes(downloaded: u64, done: usize, total: usize) -> u64 {
+    let done = u64::try_from(done).unwrap_or(1).max(1);
+    let total = u64::try_from(total).unwrap_or(0);
+
+    downloaded / done * total
+}
+
+fn remaining_estimate(
+    realtime: bool,
+    elapsed: Duration,
+    track_time: Duration,
+    done: usize,
+    total: usize,
+) -> Duration {
+    let left = u64::try_from(total.saturating_sub(done)).unwrap_or(0);
+    let done = u64::try_from(done).unwrap_or(1).max(1);
+    let per_track = if realtime { track_time } else { elapsed };
+
+    Duration::from_secs(per_track.as_secs() / done * left)
+}
 const PARTIAL_EXTENSION: &str = "mp3.part";
 
 fn sweep_partials(library_dir: &std::path::Path) -> Result<usize, SpsyncError> {
@@ -193,7 +261,7 @@ impl Client {
         &self,
         track: &TrackRef,
         taken: &HashSet<PathBuf>,
-    ) -> Result<(Entry, Duration, Option<String>), SpsyncError> {
+    ) -> Result<Downloaded, SpsyncError> {
         let audio = self.download(track).await?;
         let source_format = format!("{:?}", audio.format);
         let (meta, cover, ogg, cover_error) =
@@ -211,8 +279,8 @@ impl Client {
         write_tags(&partial, &track.id, &meta, cover.as_ref())?;
         fs::rename(&partial, &absolute)?;
 
-        Ok((
-            Entry {
+        Ok(Downloaded {
+            entry: Entry {
                 uri: track.uri.clone(),
                 path: relative,
                 added_at: track.added_at,
@@ -222,9 +290,10 @@ impl Client {
                 source_format,
                 encoder: transcode::ENCODER.to_owned(),
             },
-            Duration::from_millis(u64::from(meta.duration_ms)),
+            track_duration: Duration::from_millis(u64::from(meta.duration_ms)),
             cover_error,
-        ))
+            bytes: mp3.len(),
+        })
     }
 
     /// # Errors
@@ -241,28 +310,61 @@ impl Client {
         let mut taken: HashSet<PathBuf> =
             manifest.entries.values().map(|e| e.path.clone()).collect();
 
+        let run_started = Instant::now();
+        let mut library_size = library_bytes(&self.config().library_dir);
+        let mut downloaded_bytes: u64 = 0;
+        let mut downloaded_time = Duration::ZERO;
+
+        tracing::info!(
+            tracks = tracks.len(),
+            realtime = self.config().realtime,
+            library = %human_bytes(library_size),
+            "starting library sync"
+        );
+
         for (index, track) in tracks.iter().enumerate() {
+            let position = index + 1;
+            let progress = format!("{position}/{}", tracks.len());
             let started = Instant::now();
 
+            tracing::info!(progress = %progress, uri = %track.uri, "downloading");
+
             match self.sync_one(track, &taken).await {
-                Ok((entry, duration, cover_error)) => {
-                    if let Some(e) = cover_error {
+                Ok(done) => {
+                    if let Some(e) = done.cover_error {
                         tracing::warn!(uri = %track.uri, error = %e, "cover art unavailable");
                         report.missing_covers += 1;
                     }
+
+                    report.added += 1;
+                    let bytes = u64::try_from(done.bytes).unwrap_or(0);
+                    downloaded_bytes += bytes;
+                    downloaded_time += done.track_duration;
+                    library_size += bytes;
+
                     tracing::info!(
-                        uri = %track.uri,
-                        path = %entry.path.display(),
-                        progress = format!("{}/{}", index + 1, tracks.len()),
+                        progress = %progress,
+                        track = %done.entry.path.display(),
+                        took = %human_duration(started.elapsed()),
+                        size = %human_bytes(bytes),
+                        library = %human_bytes(library_size),
+                        projected = %human_bytes(projected_bytes(downloaded_bytes, report.added, tracks.len())),
+                        eta = %human_duration(remaining_estimate(
+                            self.config().realtime,
+                            run_started.elapsed(),
+                            downloaded_time,
+                            report.added,
+                            tracks.len(),
+                        )),
                         "downloaded"
                     );
-                    taken.insert(entry.path.clone());
-                    manifest.entries.insert(track.id.clone(), entry);
-                    manifest.save(&manifest_path)?;
-                    report.added += 1;
 
-                    if self.config().realtime && index + 1 < tracks.len() {
-                        let remaining = duration.saturating_sub(started.elapsed());
+                    taken.insert(done.entry.path.clone());
+                    manifest.entries.insert(track.id.clone(), done.entry);
+                    manifest.save(&manifest_path)?;
+
+                    if self.config().realtime && position < tracks.len() {
+                        let remaining = done.track_duration.saturating_sub(started.elapsed());
                         if !remaining.is_zero() {
                             tracing::debug!(secs = remaining.as_secs(), "pacing to realtime");
                             tokio::time::sleep(remaining).await;
@@ -270,7 +372,7 @@ impl Client {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(uri = %track.uri, error = %e, "track failed");
+                    tracing::warn!(progress = %progress, uri = %track.uri, error = %e, "track failed");
                     report.failed.push(Failure {
                         uri: track.uri.clone(),
                         error: e.to_string(),
@@ -278,6 +380,15 @@ impl Client {
                 }
             }
         }
+
+        tracing::info!(
+            added = report.added,
+            failed = report.failed.len(),
+            missing_covers = report.missing_covers,
+            library = %human_bytes(library_size),
+            took = %human_duration(run_started.elapsed()),
+            "library sync finished"
+        );
 
         Ok(report)
     }
@@ -322,13 +433,14 @@ impl Client {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use std::{collections::HashSet, fs, path::PathBuf};
+    use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
 
     use tempfile::TempDir;
 
     use super::{
         Entry, Manifest, Removed, TrackMeta, TrackRef, apply_removals, apply_restores, file_name,
-        partition_restores, sweep_partials,
+        human_bytes, human_duration, partition_restores, projected_bytes, remaining_estimate,
+        sweep_partials,
     };
 
     fn meta(artist: &str, title: &str) -> TrackMeta {
@@ -340,6 +452,63 @@ mod tests {
             disc_number: None,
             duration_ms: 0,
         }
+    }
+
+    #[test]
+    fn formats_durations_by_magnitude() {
+        assert_eq!(human_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(human_duration(Duration::from_secs(125)), "2m5s");
+        assert_eq!(human_duration(Duration::from_secs(3700)), "1h1m");
+        assert_eq!(human_duration(Duration::from_hours(100)), "4d4h");
+    }
+
+    #[test]
+    fn formats_bytes_by_magnitude() {
+        assert_eq!(human_bytes(5120), "5KB");
+        assert_eq!(human_bytes(9_000_000), "8.5MB");
+        assert_eq!(human_bytes(13_000_000_000), "12.1GB");
+    }
+
+    #[test]
+    fn projects_total_size_from_progress() {
+        assert_eq!(projected_bytes(9_000_000, 1, 1000), 9_000_000_000);
+        assert_eq!(projected_bytes(0, 0, 1000), 0);
+    }
+
+    #[test]
+    fn estimates_remaining_from_track_length_when_pacing() {
+        let elapsed = Duration::from_secs(10);
+        let track_time = Duration::from_secs(2000);
+
+        assert_eq!(
+            remaining_estimate(true, elapsed, track_time, 10, 110),
+            Duration::from_secs(20_000)
+        );
+    }
+
+    #[test]
+    fn estimates_remaining_from_elapsed_when_not_pacing() {
+        let elapsed = Duration::from_secs(100);
+        let track_time = Duration::from_secs(2000);
+
+        assert_eq!(
+            remaining_estimate(false, elapsed, track_time, 10, 110),
+            Duration::from_secs(1000)
+        );
+    }
+
+    #[test]
+    fn estimates_nothing_remaining_when_done() {
+        assert_eq!(
+            remaining_estimate(
+                true,
+                Duration::from_secs(100),
+                Duration::from_secs(100),
+                10,
+                10
+            ),
+            Duration::ZERO
+        );
     }
 
     #[test]
