@@ -23,6 +23,7 @@
                         pkgs.commitlint
                         pkgs.taplo
                         pkgs.typos
+                        pkgs.just
                     ];
 
                     shellHook = ''
