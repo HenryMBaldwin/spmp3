@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod diff;
 mod download;
+mod durations;
 mod error;
 mod library;
 mod session;
