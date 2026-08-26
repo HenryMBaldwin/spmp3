@@ -35,13 +35,16 @@ propagation.
 
 ## Running
 
-Images are published to `ghcr.io/henrymbaldwin/spmp3/{daemon,login}`, versioned
-from conventional commits. Copy `docker-compose.example.yaml` and
+Images are published to `ghcr.io/henrymbaldwin/spmp3/{daemon,login,web}`,
+versioned from conventional commits. Copy `docker-compose.example.yaml` and
 `.env.example`, then:
 
 ```sh
 docker compose up -d
 ```
+
+The daemon starts without credentials and skips library syncs until authorized.
+It picks them up on its next interval without a restart.
 
 To build locally instead, pass the binary as a build argument:
 
@@ -51,13 +54,14 @@ docker build --build-arg SERVICE=daemon -t spmp3:daemon .
 
 ## Authorizing
 
-Run the login binary, open the url it prints on any machine, approve, then paste
-the address you were redirected to back into the terminal. Credentials are
-written to `CACHE_DIR`.
-
 ```sh
 docker compose run --rm login
 ```
+
+Open the url it prints in a browser on any machine and approve access. The
+browser is then redirected to a `127.0.0.1` address that will not load. Copy
+that whole address from the address bar and paste it back into the terminal.
+Credentials are written to `CACHE_DIR` and are reused on later runs.
 
 ## Remote sync
 
