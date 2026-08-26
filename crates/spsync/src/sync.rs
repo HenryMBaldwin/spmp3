@@ -7,12 +7,13 @@ use std::{
 
 use id3::{
     Tag, TagLike, Version,
-    frame::{Picture, PictureType},
+    frame::{ExtendedText, Picture, PictureType},
 };
 
 use common::{
     manifest::{Entry, MANIFEST_FILE, Manifest},
     path::sanitize_component,
+    tag::TRACK_ID_DESCRIPTION,
 };
 
 use crate::{
@@ -153,10 +154,15 @@ fn apply_removals(
 
 fn write_tags(
     path: &std::path::Path,
+    id: &str,
     meta: &TrackMeta,
     cover: Option<&Cover>,
 ) -> Result<(), SpsyncError> {
     let mut tag = Tag::new();
+    tag.add_frame(ExtendedText {
+        description: TRACK_ID_DESCRIPTION.to_owned(),
+        value: id.to_owned(),
+    });
     tag.set_title(&meta.title);
     tag.set_album(&meta.album);
 
@@ -202,7 +208,7 @@ impl Client {
         let partial = absolute.with_extension(PARTIAL_EXTENSION);
 
         fs::write(&partial, &mp3)?;
-        write_tags(&partial, &meta, cover.as_ref())?;
+        write_tags(&partial, &track.id, &meta, cover.as_ref())?;
         fs::rename(&partial, &absolute)?;
 
         Ok((
