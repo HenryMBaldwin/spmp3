@@ -5,7 +5,6 @@ edition = "2024"
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
-# TODO: remove when crate is implemented
 publish = false
 
 [dependencies]

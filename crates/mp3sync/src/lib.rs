@@ -86,7 +86,7 @@ impl Syncer {
     /// # Errors
     ///
     /// Returns [`Mp3syncError::DeviceNotMounted`] if the mount point is missing.
-    /// Per-file failures are collected into the report rather than aborting.
+    /// Per-file failures are collected into the report.
     pub fn sync(&self) -> Result<SyncReport, Mp3syncError> {
         if !self.config.mount_dir.is_dir() {
             return Err(Mp3syncError::DeviceNotMounted {

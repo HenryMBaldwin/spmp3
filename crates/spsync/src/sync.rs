@@ -224,7 +224,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached. Per-track
-    /// failures are collected into the report rather than aborting the run.
+    /// failures are collected into the report.
     pub async fn sync_tracks(&self, tracks: &[TrackRef]) -> Result<SyncReport, SpsyncError> {
         sweep_partials(&self.config().library_dir)?;
 

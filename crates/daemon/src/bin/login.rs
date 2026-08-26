@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("1. open the authorization url printed below in any browser");
     println!("2. approve access");
     println!(
-        "3. your browser will fail to load http://127.0.0.1:{port}/login... — that is expected"
+        "3. your browser will fail to load http://127.0.0.1:{port}/login..., which is expected"
     );
     println!("4. copy that whole address from the address bar and paste it here\n");
 
