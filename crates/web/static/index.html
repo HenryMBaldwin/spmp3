@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>spmp3</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+  button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  #log { font-family: ui-monospace, monospace; font-size: .85rem; white-space: pre-wrap;
+         max-height: 22rem; overflow-y: auto; border: 1px solid currentColor; padding: .5rem;
+         margin-top: 1rem; }
+  progress { width: 100%; height: 1rem; }
+  .row { display: flex; gap: .5rem; align-items: center; margin: 1rem 0; }
+  .muted { opacity: .7; }
+</style>
+</head>
+<body>
+<h1>spmp3</h1>
+<p id="support"></p>
+<div class="row">
+  <button id="pick">Choose player</button>
+  <button id="sync" disabled>Sync</button>
+  <span id="chosen" class="muted"></span>
+</div>
+<progress id="bar" value="0" max="1" hidden></progress>
+<div id="log"></div>
+
+<script>
+const CONCURRENCY = 4;
+const out = document.getElementById('log');
+const bar = document.getElementById('bar');
+let root = null;
+
+function log(msg) {
+  out.textContent += msg + '\n';
+  out.scrollTop = out.scrollHeight;
+}
+
+if (!window.showDirectoryPicker) {
+  document.getElementById('support').textContent =
+    'This browser cannot write to the player. Use a Chromium-based desktop browser.';
+  document.getElementById('pick').disabled = true;
+}
+
+const ID_DESCRIPTION = 'SPMP3_TRACK_ID';
+const ID_WINDOW = 4096;
+
+function syncsafe(b, o) {
+  return (b[o] << 21) | (b[o + 1] << 14) | (b[o + 2] << 7) | b[o + 3];
+}
+
+async function readTrackId(handle) {
+  try {
+    const blob = (await handle.getFile()).slice(0, ID_WINDOW);
+    const b = new Uint8Array(await blob.arrayBuffer());
+    if (b.length < 10 || String.fromCharCode(b[0], b[1], b[2]) !== 'ID3') return null;
+    const end = Math.min(b.length, 10 + syncsafe(b, 6));
+    const text = new TextDecoder('utf-8');
+    let i = 10;
+    while (i + 10 <= end) {
+      const id = String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
+      if (id === '\0\0\0\0') break;
+      const size = syncsafe(b, i + 4);
+      if (id === 'TXXX' && i + 10 + size <= b.length) {
+        const body = b.subarray(i + 11, i + 10 + size);
+        const split = body.indexOf(0);
+        if (split > -1) {
+          const desc = text.decode(body.subarray(0, split));
+          if (desc === ID_DESCRIPTION) {
+            return text.decode(body.subarray(split + 1)).replace(/\0+$/, '');
+          }
+        }
+      }
+      i += 10 + size;
+    }
+  } catch { /* unreadable file, fall back to path matching */ }
+  return null;
+}
+
+async function walk(dir, prefix, found) {
+  for await (const [name, handle] of dir.entries()) {
+    const path = prefix ? prefix + '/' + name : name;
+    if (handle.kind === 'directory') await walk(handle, path, found);
+    else if (name.toLowerCase().endsWith('.mp3')) {
+      found.push({ path, id: await readTrackId(handle) });
+    }
+  }
+  return found;
+}
+
+async function dirFor(segments, create) {
+  let dir = root;
+  for (const segment of segments) dir = await dir.getDirectoryHandle(segment, { create });
+  return dir;
+}
+
+async function writeFile(path, body) {
+  const parts = path.split('/');
+  const name = parts.pop();
+  const dir = await dirFor(parts, true);
+  const handle = await dir.getFileHandle(name, { create: true });
+  const stream = await handle.createWritable();
+  await body.pipeTo(stream);
+}
+
+async function removeFile(path) {
+  const parts = path.split('/');
+  const name = parts.pop();
+  const dir = await dirFor(parts, false);
+  await dir.removeEntry(name);
+}
+
+async function moveFile(from, to) {
+  const parts = from.split('/');
+  const name = parts.pop();
+  const dir = await dirFor(parts, false);
+  const file = await (await dir.getFileHandle(name)).getFile();
+  await writeFile(to, file.stream());
+  await dir.removeEntry(name);
+}
+
+async function pool(items, worker) {
+  let index = 0, done = 0;
+  bar.hidden = false; bar.max = items.length; bar.value = 0;
+  const runners = Array.from({ length: Math.min(CONCURRENCY, items.length) }, async () => {
+    while (index < items.length) {
+      const item = items[index++];
+      try { await worker(item); } catch (e) { log('  failed: ' + (e.message || e)); }
+      bar.value = ++done;
+    }
+  });
+  await Promise.all(runners);
+}
+
+document.getElementById('pick').onclick = async () => {
+  try {
+    root = await window.showDirectoryPicker({ mode: 'readwrite', id: 'spmp3-device' });
+  } catch { return; }
+  document.getElementById('chosen').textContent = root.name;
+  document.getElementById('sync').disabled = false;
+  log('selected ' + root.name);
+};
+
+document.getElementById('sync').onclick = async () => {
+  const sync = document.getElementById('sync');
+  sync.disabled = true;
+  try {
+    log('reading player...');
+    const contents = await walk(root, '', []);
+    const tagged = contents.filter((f) => f.id).length;
+    log(`  found ${contents.length} mp3s (${tagged} identified by tag)`);
+
+    const res = await fetch('/api/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contents }),
+    });
+    if (!res.ok) throw new Error('plan failed: ' + res.status);
+    const plan = await res.json();
+    log(`plan: ${plan.copy.length} to copy, ${plan.rename.length} to move, ${plan.delete.length} to delete`);
+
+    if (plan.rename.length) {
+      log('moving...');
+      await pool(plan.rename, async (step) => { await moveFile(step.from, step.to); });
+    }
+    if (plan.copy.length) {
+      log('copying...');
+      await pool(plan.copy, async (step) => {
+        const r = await fetch(step.url);
+        if (!r.ok) throw new Error(step.to + ': ' + r.status);
+        await writeFile(step.to, r.body);
+      });
+    }
+    if (plan.delete.length) {
+      log('deleting...');
+      await pool(plan.delete, async (path) => { await removeFile(path); });
+    }
+
+    const after = await walk(root, '', []);
+    const check = await fetch('/api/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contents: after }),
+    });
+    const remaining = await check.json();
+    const left = remaining.copy.length + remaining.rename.length + remaining.delete.length;
+    log(left === 0 ? 'done, player is in sync' : `done, ${left} step(s) still outstanding`);
+  } catch (e) {
+    log('error: ' + (e.message || e));
+  } finally {
+    bar.hidden = true;
+    sync.disabled = false;
+  }
+};
+</script>
+</body>
+</html>

@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/spsync", "crates/mp3sync", "crates/daemon", "crates/common"]
+members = [
+  "crates/spsync",
+  "crates/mp3sync",
+  "crates/daemon",
+  "crates/common",
+  "crates/web",
+]
 resolver = "3"
 
 [workspace.package]

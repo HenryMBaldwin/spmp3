@@ -30,7 +30,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        service: [daemon, login]
+        service: [daemon, login, web]
     steps:
       - uses: actions/checkout@v7
 
