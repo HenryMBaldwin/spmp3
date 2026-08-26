@@ -366,7 +366,11 @@ impl Client {
                     if self.config().realtime && position < tracks.len() {
                         let remaining = done.track_duration.saturating_sub(started.elapsed());
                         if !remaining.is_zero() {
-                            tracing::debug!(secs = remaining.as_secs(), "pacing to realtime");
+                            tracing::info!(
+                                waiting = %human_duration(remaining),
+                                next = %format!("{}/{}", position + 1, tracks.len()),
+                                "pacing to realtime"
+                            );
                             tokio::time::sleep(remaining).await;
                         }
                     }
