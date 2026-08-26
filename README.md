@@ -31,9 +31,18 @@ propagation.
 
 ## Running
 
+Images are published to `ghcr.io/henrymbaldwin/spmp3/{daemon,login}`, versioned
+from conventional commits. Copy `docker-compose.example.yaml` and
+`.env.example`, then:
+
+```sh
+docker compose up -d
+```
+
+To build locally instead, pass the binary as a build argument:
+
 ```sh
 docker build --build-arg SERVICE=daemon -t spmp3:daemon .
-docker run --env-file .env -v spmp3:/data -v /media:/media:rslave spmp3:daemon
 ```
 
 ## Authorizing
@@ -43,6 +52,5 @@ the address you were redirected to back into the terminal. Credentials are
 written to `CACHE_DIR`.
 
 ```sh
-docker build --build-arg SERVICE=login -t spmp3:login .
-docker run --rm -it --env-file .env -v spmp3:/data spmp3:login
+docker compose run --rm login
 ```

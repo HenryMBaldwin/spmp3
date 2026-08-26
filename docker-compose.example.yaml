@@ -1,0 +1,17 @@
+services:
+  daemon:
+    image: ghcr.io/henrymbaldwin/spmp3/daemon:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /srv/spmp3:/data
+      - /media:/media:rslave
+
+  login:
+    image: ghcr.io/henrymbaldwin/spmp3/login:latest
+    profiles: [login]
+    env_file: .env
+    stdin_open: true
+    tty: true
+    volumes:
+      - /srv/spmp3:/data
