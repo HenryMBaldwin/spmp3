@@ -15,3 +15,12 @@ services:
     tty: true
     volumes:
       - /srv/spmp3:/data
+
+  web:
+    image: ghcr.io/henrymbaldwin/spmp3/web:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - /srv/spmp3:/data:ro
