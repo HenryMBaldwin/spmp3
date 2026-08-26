@@ -5,20 +5,19 @@ mod plan;
 mod state;
 
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
 
 use common::manifest::{MANIFEST_FILE, Manifest};
 
+use crate::layout::MUSIC_DIR;
 pub use crate::{
     config::Config,
     error::Mp3syncError,
-    plan::{Copy, Plan, Rename},
-    state::{DeviceEntry, DeviceState},
+    plan::{Copy, Plan, Rename, plan, source_hash},
+    state::{DeviceEntry, DeviceFile, DeviceState},
 };
-use crate::{layout::MUSIC_DIR, layout::device_path};
 
 #[derive(Debug, Default)]
 pub struct ReconcileReport {
@@ -237,36 +236,23 @@ impl Syncer {
         }
 
         let manifest = self.manifest()?;
-        let expected: HashMap<PathBuf, (&String, PathBuf)> = manifest
-            .entries
+
+        let contents: Vec<DeviceFile> = Self::device_files(&self.config.mount_dir.join(MUSIC_DIR))?
             .iter()
-            .map(|(id, entry)| (device_path(entry), (id, entry.path.clone())))
+            .filter_map(|absolute| absolute.strip_prefix(&self.config.mount_dir).ok())
+            .map(|path| DeviceFile {
+                path: path.to_path_buf(),
+                id: None,
+            })
             .collect();
 
-        let mut state = DeviceState::default();
+        let (mut state, orphans) = DeviceState::from_contents(&manifest, &contents);
         let mut report = ReconcileReport {
             previously_recorded: self.state()?.entries.len(),
+            found: state.entries.len(),
+            orphans,
             ..ReconcileReport::default()
         };
-
-        for absolute in Self::device_files(&self.config.mount_dir.join(MUSIC_DIR))? {
-            let Ok(relative) = absolute.strip_prefix(&self.config.mount_dir) else {
-                continue;
-            };
-
-            if let Some((id, library_path)) = expected.get(relative) {
-                state.entries.insert(
-                    (*id).clone(),
-                    DeviceEntry {
-                        path: relative.to_path_buf(),
-                        library_path: library_path.clone(),
-                    },
-                );
-                report.found += 1;
-            } else {
-                report.orphans.push(relative.to_path_buf());
-            }
-        }
 
         let steps = plan::plan(&manifest, &state);
         report.missing = steps.copy.len() + steps.rename.len();
