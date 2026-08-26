@@ -29,6 +29,7 @@ Set via environment. See `.env.example`.
 | `OAUTH_PORT`            | no       | `5588`         | Port the login flow listens on            |
 | `OAUTH_REDIRECT_HOST`   | no       | `127.0.0.1`    | Redirect host given to Spotify            |
 | `WEB_BIND`              | no       | `0.0.0.0:8080` | Address the web client listens on         |
+| `RUST_LOG`              | no       |                | Log filter, defaults to quiet dependencies |
 
 `MOUNT_DIR` must be the player's own mount point, reached through mount
 propagation.

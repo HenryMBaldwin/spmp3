@@ -9,6 +9,8 @@ use tokio::sync::watch;
 
 use crate::config::Config;
 
+const DEFAULT_FILTER: &str = "warn,daemon=info,spsync=info,mp3sync=info";
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -17,7 +19,8 @@ async fn main() -> ExitCode {
         .with_current_span(false)
         .with_span_list(false)
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| DEFAULT_FILTER.into()),
         )
         .init();
 
