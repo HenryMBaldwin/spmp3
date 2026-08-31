@@ -9,7 +9,8 @@ use axum::{
 };
 use common::{
     manifest::{MANIFEST_FILE, Manifest},
-    status::{STATUS_FILE, Status},
+    overrides::{Action, OVERRIDES_FILE, Override, Overrides, validate_url},
+    status::{STATUS_FILE, Status, now},
 };
 use mp3sync::{DeviceFile, DeviceState, plan};
 use serde::{Deserialize, Serialize};
@@ -121,6 +122,67 @@ pub async fn track_handler(
     );
 
     Ok(response.into_response())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum OverrideRequest {
+    Ignore {
+        id: String,
+        #[serde(default)]
+        label: String,
+    },
+    Source {
+        id: String,
+        url: String,
+        #[serde(default)]
+        label: String,
+    },
+    Clear {
+        id: String,
+    },
+}
+
+pub async fn overrides_handler(State(config): State<Config>) -> Result<Json<Overrides>, WebError> {
+    Ok(Json(Overrides::load(
+        &config.library_dir.join(OVERRIDES_FILE),
+    )?))
+}
+
+pub async fn set_override_handler(
+    State(config): State<Config>,
+    Json(request): Json<OverrideRequest>,
+) -> Result<Json<Overrides>, WebError> {
+    let path = config.library_dir.join(OVERRIDES_FILE);
+    let mut overrides = Overrides::load(&path)?;
+
+    let (id, label, action) = match request {
+        OverrideRequest::Ignore { id, label } => (id, label, Some(Action::Ignore)),
+        OverrideRequest::Source { id, url, label } => {
+            validate_url(&url)?;
+            (id, label, Some(Action::Source { url }))
+        }
+        OverrideRequest::Clear { id } => (id, String::new(), None),
+    };
+
+    if let Some(action) = action {
+        tracing::info!(id = %id, ?action, "recorded override");
+        overrides.entries.insert(
+            id,
+            Override {
+                action,
+                label,
+                at: now(),
+            },
+        );
+    } else {
+        tracing::info!(id = %id, "cleared override");
+        overrides.entries.remove(&id);
+    }
+
+    overrides.save(&path)?;
+
+    Ok(Json(overrides))
 }
 
 pub async fn status_handler(State(config): State<Config>) -> Result<Json<Status>, WebError> {

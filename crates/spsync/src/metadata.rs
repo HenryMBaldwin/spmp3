@@ -16,6 +16,7 @@ pub(crate) struct TrackInfo {
     pub length: Duration,
     pub title: String,
     pub artist: String,
+    pub album: String,
 }
 
 fn request(chunk: &[TrackRef]) -> BatchedEntityRequest {
@@ -44,10 +45,15 @@ fn info_from(track: &Track) -> TrackInfo {
             .first()
             .map(|a| a.name().to_owned())
             .unwrap_or_default(),
+        album: track
+            .album
+            .as_ref()
+            .map(|a| a.name().to_owned())
+            .unwrap_or_default(),
     }
 }
 
-/// Track title, artist and length keyed by uri, for every track the batch resolved.
+/// Track title, artist, album and length keyed by uri, for every track the batch resolved.
 pub(crate) async fn fetch(session: &Session, tracks: &[TrackRef]) -> HashMap<String, TrackInfo> {
     let mut resolved = HashMap::with_capacity(tracks.len());
 

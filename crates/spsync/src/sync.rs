@@ -20,10 +20,59 @@ use crate::{
     Client, Removed, SpsyncError, TrackRef,
     download::{Cover, TrackMeta},
     metadata::{self, TrackInfo},
-    transcode,
+    transcode, youtube,
 };
 
 const MAX_STEM: usize = 120;
+const SOURCED_FORMAT: &str = "youtube-m4a";
+
+/// Drops tracks the overrides file marks ignored, so they stop being retried and reported.
+fn queue(tracks: &[TrackRef], overrides: &common::overrides::Overrides) -> Vec<TrackRef> {
+    let kept: Vec<TrackRef> = tracks
+        .iter()
+        .filter(|track| !overrides.is_ignored(&track.id))
+        .cloned()
+        .collect();
+
+    let ignored = tracks.len() - kept.len();
+    if ignored > 0 {
+        tracing::info!(ignored, "skipping tracks marked ignored");
+    }
+
+    kept
+}
+
+/// Sleeps out the remainder of the track's own length, so downloads look like listening.
+async fn pace(track_duration: Duration, took: Duration, position: usize, total: usize) {
+    let remaining = track_duration.saturating_sub(took);
+    if remaining.is_zero() {
+        return;
+    }
+
+    tracing::info!(
+        waiting = %human_duration(remaining),
+        next = %format!("{}/{total}", position + 1),
+        "pacing to realtime"
+    );
+    tokio::time::sleep(remaining).await;
+}
+
+fn meta_from_info(info: Option<&TrackInfo>) -> TrackMeta {
+    TrackMeta {
+        title: info.map(|i| i.title.clone()).unwrap_or_default(),
+        album: info.map(|i| i.album.clone()).unwrap_or_default(),
+        artists: info
+            .map(|i| i.artist.clone())
+            .filter(|artist| !artist.is_empty())
+            .into_iter()
+            .collect(),
+        number: None,
+        disc_number: None,
+        duration_ms: info
+            .and_then(|i| u32::try_from(i.length.as_millis()).ok())
+            .unwrap_or(0),
+    }
+}
 
 struct Downloaded {
     entry: Entry,
@@ -302,15 +351,34 @@ impl Client {
         &self,
         track: &TrackRef,
         taken: &HashSet<PathBuf>,
+        source: Option<&str>,
+        info: Option<&TrackInfo>,
     ) -> Result<Downloaded, SpsyncError> {
-        let audio = self.download(track).await?;
-        let source_format = format!("{:?}", audio.format);
-        let (meta, cover, ogg, cover_error) =
-            (audio.meta, audio.cover, audio.ogg, audio.cover_error);
+        let (mp3, meta, cover, cover_error, source_format) = if let Some(url) = source {
+            let m4a = youtube::download(url).await?;
+            let mp3 = tokio::task::spawn_blocking(move || transcode::m4a_to_mp3(m4a))
+                .await
+                .map_err(|_| SpsyncError::DownloadAborted)??;
 
-        let mp3 = tokio::task::spawn_blocking(move || transcode::ogg_to_mp3(ogg))
-            .await
-            .map_err(|_| SpsyncError::DownloadAborted)??;
+            (
+                mp3,
+                meta_from_info(info),
+                None,
+                None,
+                SOURCED_FORMAT.to_owned(),
+            )
+        } else {
+            let audio = self.download(track).await?;
+            let source_format = format!("{:?}", audio.format);
+            let (meta, cover, ogg, cover_error) =
+                (audio.meta, audio.cover, audio.ogg, audio.cover_error);
+
+            let mp3 = tokio::task::spawn_blocking(move || transcode::ogg_to_mp3(ogg))
+                .await
+                .map_err(|_| SpsyncError::DownloadAborted)??;
+
+            (mp3, meta, cover, cover_error, source_format)
+        };
 
         let relative = file_name(&meta, &track.id, taken);
         let absolute = self.config().library_dir.join(&relative);
@@ -364,6 +432,9 @@ impl Client {
     pub async fn sync_tracks(&self, tracks: &[TrackRef]) -> Result<SyncReport, SpsyncError> {
         sweep_partials(&self.config().library_dir)?;
 
+        let overrides = self.overrides()?;
+        let tracks: &[TrackRef] = &queue(tracks, &overrides);
+
         let mut manifest = self.manifest()?;
         let manifest_path = self.config().library_dir.join(MANIFEST_FILE);
 
@@ -396,7 +467,15 @@ impl Client {
 
             tracing::info!(progress = %progress, uri = %track.uri, "downloading");
 
-            match self.sync_one(track, &taken).await {
+            match self
+                .sync_one(
+                    track,
+                    &taken,
+                    overrides.source(&track.id),
+                    resolved.get(&track.uri),
+                )
+                .await
+            {
                 Ok(done) => {
                     let took = started.elapsed();
                     work_time += took;
@@ -436,15 +515,7 @@ impl Client {
                     manifest.save(&manifest_path)?;
 
                     if self.config().realtime && position < tracks.len() {
-                        let remaining = done.track_duration.saturating_sub(took);
-                        if !remaining.is_zero() {
-                            tracing::info!(
-                                waiting = %human_duration(remaining),
-                                next = %format!("{}/{}", position + 1, tracks.len()),
-                                "pacing to realtime"
-                            );
-                            tokio::time::sleep(remaining).await;
-                        }
+                        pace(done.track_duration, took, position, tracks.len()).await;
                     }
                 }
                 Err(e) => {
@@ -533,6 +604,7 @@ mod tests {
             length: Duration::from_secs(secs),
             title: String::new(),
             artist: String::new(),
+            album: String::new(),
         }
     }
 

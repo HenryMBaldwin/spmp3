@@ -25,14 +25,14 @@ struct Pcm {
     channels: u8,
 }
 
-fn decode_ogg(ogg: Vec<u8>) -> Result<Pcm, SpsyncError> {
+fn decode(audio: Vec<u8>, extension: &str) -> Result<Pcm, SpsyncError> {
     let source = MediaSourceStream::new(
-        Box::new(Cursor::new(ogg)),
+        Box::new(Cursor::new(audio)),
         MediaSourceStreamOptions::default(),
     );
 
     let mut hint = Hint::new();
-    hint.with_extension("ogg");
+    hint.with_extension(extension);
 
     let probed = symphonia::default::get_probe().format(
         &hint,
@@ -43,9 +43,9 @@ fn decode_ogg(ogg: Vec<u8>) -> Result<Pcm, SpsyncError> {
 
     let mut format = probed.format;
     let (track_id, codec_params) = {
-        let track = format
-            .default_track()
-            .ok_or_else(|| SpsyncError::Transcode("ogg stream has no default track".to_owned()))?;
+        let track = format.default_track().ok_or_else(|| {
+            SpsyncError::Transcode(format!("{extension} stream has no default track"))
+        })?;
 
         (track.id, track.codec_params.clone())
     };
@@ -88,9 +88,9 @@ fn decode_ogg(ogg: Vec<u8>) -> Result<Pcm, SpsyncError> {
     }
 
     if samples.is_empty() {
-        return Err(SpsyncError::Transcode(
-            "ogg stream decoded to nothing".to_owned(),
-        ));
+        return Err(SpsyncError::Transcode(format!(
+            "{extension} stream decoded to nothing"
+        )));
     }
 
     Ok(Pcm {
@@ -135,5 +135,9 @@ fn encode_mp3(pcm: &Pcm) -> Result<Vec<u8>, SpsyncError> {
 }
 
 pub(crate) fn ogg_to_mp3(ogg: Vec<u8>) -> Result<Vec<u8>, SpsyncError> {
-    encode_mp3(&decode_ogg(ogg)?)
+    encode_mp3(&decode(ogg, "ogg")?)
+}
+
+pub(crate) fn m4a_to_mp3(m4a: Vec<u8>) -> Result<Vec<u8>, SpsyncError> {
+    encode_mp3(&decode(m4a, "m4a")?)
 }

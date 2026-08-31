@@ -48,6 +48,12 @@
   #support:empty { display: none; }
   #support { color: var(--bad); margin: 0 0 1.5rem; }
   .empty { color: var(--dim); }
+  td.act { text-align: right; white-space: nowrap; }
+  button.mini { margin: 0 0 0 1rem; font-size: inherit; }
+  button.mini::before { content: "["; }
+  button.mini::after  { content: "]"; }
+  .state { color: var(--dim); }
+  .pending { color: var(--dim); font-style: italic; }
 </style>
 </head>
 <body>
@@ -105,6 +111,23 @@ function row(k, v) {
   return `<div><span class="k">${esc(k)}</span>${v}</div>`;
 }
 
+let overrides = { entries: {} };
+
+function idOf(uri) {
+  return String(uri || '').split(':').pop();
+}
+
+function nameOf(f) {
+  if (f.artist || f.title) {
+    return `${esc(f.artist)}${f.artist && f.title ? ' &mdash; ' : ''}${esc(f.title)}`;
+  }
+  return `<span class="empty">${esc(f.uri)}</span>`;
+}
+
+function plainName(f) {
+  return [f.artist, f.title].filter(Boolean).join(' - ') || f.uri || '';
+}
+
 function renderStatus(s) {
   const el = document.getElementById('status');
   const lib = s.library || {};
@@ -135,23 +158,50 @@ function renderStatus(s) {
   }
 
   if (dev) {
-    const pending = dev.pending
-      ? `<span class="k" style="min-width:0"></span>${dev.pending} pending`
-      : 'in sync';
     html += row('device',
-      `${dev.files} files ${dim('·')} ${stamp(dev.synced_at)} ${dim('·')} ${pending}`);
+      `${dev.files} files ${dim('·')} ${stamp(dev.synced_at)} ${dim('·')} ${dev.pending ? dev.pending + ' pending' : 'in sync'}`);
   } else {
     html += row('device', '<span class="empty">never synced</span>');
   }
 
-  if (fails.length) {
-    html += `<div style="margin-top:1.5rem"><span class="label">failed downloads (${fails.length})</span></div>`;
+  const pendingFails = fails.filter((f) => !overrides.entries[idOf(f.uri)]);
+  if (pendingFails.length) {
+    html += `<div style="margin-top:1.5rem"><span class="label">failed downloads (${pendingFails.length})</span></div>`;
     html += '<table>';
-    for (const f of fails) {
-      const name = (f.artist || f.title)
-        ? `${esc(f.artist)}${f.artist && f.title ? ' &mdash; ' : ''}${esc(f.title)}`
-        : `<span class="empty">${esc(f.uri)}</span>`;
-      html += `<tr><td class="wrap">${name}</td><td class="err">${esc(f.error)}</td></tr>`;
+    for (const f of pendingFails) {
+      const id = idOf(f.uri);
+      const label = plainName(f).replace(/"/g, '&quot;');
+      html += `<tr>`
+        + `<td class="wrap">${nameOf(f)}</td>`
+        + `<td class="err">${esc(f.error)}</td>`
+        + `<td class="act">`
+        + `<button class="mini" data-act="ignore" data-id="${esc(id)}" data-label="${label}">remove</button>`
+        + `<button class="mini" data-act="source" data-id="${esc(id)}" data-label="${label}">youtube</button>`
+        + `</td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  const entries = Object.entries(overrides.entries || {});
+  if (entries.length) {
+    const failedById = {};
+    for (const f of fails) failedById[idOf(f.uri)] = f.error;
+
+    html += `<div style="margin-top:1.5rem"><span class="label">overrides (${entries.length})</span></div>`;
+    html += '<table>';
+    for (const [id, o] of entries) {
+      const name = o.label ? esc(o.label) : `<span class="empty">${esc(id)}</span>`;
+      const err = failedById[id];
+      let state;
+      if (o.action === 'ignore') {
+        state = '<span class="state">removed from sync</span>';
+      } else if (err) {
+        state = `<span class="state">youtube</span> <span class="err">${esc(err)}</span>`;
+      } else {
+        state = `<span class="state">youtube &mdash; ${esc(o.url)}</span>`;
+      }
+      html += `<tr><td class="wrap">${name}</td><td class="wrap">${state}</td>`
+        + `<td class="act"><button class="mini" data-act="clear" data-id="${esc(id)}">undo</button></td></tr>`;
     }
     html += '</table>';
   }
@@ -161,13 +211,45 @@ function renderStatus(s) {
   }
 
   el.innerHTML = html;
+
+  for (const b of el.querySelectorAll('button.mini')) {
+    b.onclick = () => act(b.dataset.act, b.dataset.id, b.dataset.label || '');
+  }
+}
+
+async function act(action, id, label) {
+  let body = { action, id, label };
+
+  if (action === 'source') {
+    const url = prompt(`youtube url for:\n${label}`);
+    if (!url) return;
+    body.url = url.trim();
+  }
+
+  try {
+    const res = await fetch('/api/overrides', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.text()) || res.status);
+    overrides = await res.json();
+    await loadStatus();
+    log(action === 'clear' ? `cleared override for ${label || id}`
+      : `${action}: ${label || id} (applies on the next library sync)`);
+  } catch (e) {
+    log('override failed: ' + (e.message || e));
+  }
 }
 
 async function loadStatus() {
   try {
-    const res = await fetch('/api/status');
-    if (!res.ok) throw new Error(res.status);
-    renderStatus(await res.json());
+    const [status, over] = await Promise.all([
+      fetch('/api/status').then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch('/api/overrides').then((r) => (r.ok ? r.json() : { entries: {} })).catch(() => ({ entries: {} })),
+    ]);
+    overrides = over;
+    renderStatus(status);
   } catch (e) {
     document.getElementById('status').innerHTML =
       `<div class="rule">${RULE}</div><div class="empty">status unavailable (${esc(e.message || e)})</div>`;

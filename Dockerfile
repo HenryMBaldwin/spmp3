@@ -60,6 +60,12 @@ RUN if [ -z "$SERVICE" ]; then \
 
 RUN apt-get update && \
     apt-get install -y ca-certificates && \
+    if [ "$SERVICE" = "daemon" ]; then \
+      apt-get install -y --no-install-recommends python3 python3-pip && \
+      pip3 install --break-system-packages --no-cache-dir yt-dlp; \
+    fi && \
+    apt-get purge -y python3-pip 2>/dev/null || true; \
+    apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
