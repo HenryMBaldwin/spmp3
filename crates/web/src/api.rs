@@ -7,7 +7,10 @@ use axum::{
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
-use common::manifest::{MANIFEST_FILE, Manifest};
+use common::{
+    manifest::{MANIFEST_FILE, Manifest},
+    status::{STATUS_FILE, Status},
+};
 use mp3sync::{DeviceFile, DeviceState, plan};
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
@@ -118,6 +121,10 @@ pub async fn track_handler(
     );
 
     Ok(response.into_response())
+}
+
+pub async fn status_handler(State(config): State<Config>) -> Result<Json<Status>, WebError> {
+    Ok(Json(Status::load(&config.library_dir.join(STATUS_FILE))?))
 }
 
 pub async fn index_handler() -> impl IntoResponse {

@@ -2,7 +2,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use common::{config::ConfigError, manifest::ManifestError};
+use common::{config::ConfigError, manifest::ManifestError, status::StatusError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -12,6 +12,9 @@ pub enum WebError {
 
     #[error("manifest error: {0}")]
     Manifest(#[from] ManifestError),
+
+    #[error("status error: {0}")]
+    Status(#[from] StatusError),
 
     #[error("unknown track {id}")]
     UnknownTrack { id: String },

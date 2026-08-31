@@ -1,18 +1,24 @@
 use std::{sync::Arc, time::Duration};
 
+use common::status::Device;
 use mp3sync::Syncer;
 use tokio::sync::watch;
 
-use crate::mount::is_mounted;
+use crate::{mount::is_mounted, status::StatusFile};
 
-pub(crate) async fn run(syncer: Arc<Syncer>, poll: Duration, mut shutdown: watch::Receiver<bool>) {
+pub(crate) async fn run(
+    syncer: Arc<Syncer>,
+    poll: Duration,
+    status: Arc<StatusFile>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let mount_dir = syncer.config().mount_dir.clone();
     let mut ticker = tokio::time::interval(poll);
     let mut was_mounted = is_mounted(&mount_dir);
 
     if was_mounted {
         tracing::info!(path = %mount_dir.display(), "device already present at startup");
-        on_mounted(&syncer).await;
+        on_mounted(&syncer, &status).await;
     }
 
     loop {
@@ -25,7 +31,7 @@ pub(crate) async fn run(syncer: Arc<Syncer>, poll: Duration, mut shutdown: watch
 
         if mounted && !was_mounted {
             tracing::info!(path = %mount_dir.display(), "device mounted");
-            on_mounted(&syncer).await;
+            on_mounted(&syncer, &status).await;
         } else if !mounted && was_mounted {
             tracing::info!(path = %mount_dir.display(), "device removed");
         }
@@ -36,9 +42,27 @@ pub(crate) async fn run(syncer: Arc<Syncer>, poll: Duration, mut shutdown: watch
     tracing::info!("device loop stopped");
 }
 
-async fn on_mounted(syncer: &Arc<Syncer>) {
+async fn on_mounted(syncer: &Arc<Syncer>, status: &Arc<StatusFile>) {
     reconcile(syncer).await;
     sync(syncer).await;
+    record(syncer, status).await;
+}
+
+async fn record(syncer: &Arc<Syncer>, status: &Arc<StatusFile>) {
+    let pending = syncer.pending().map_or(0, |plan| {
+        plan.copy.len() + plan.rename.len() + plan.delete.len()
+    });
+    let files = syncer.state().map_or(0, |state| state.entries.len());
+
+    status
+        .update(|s| {
+            s.device = Some(Device {
+                synced_at: common::status::now(),
+                files,
+                pending,
+            });
+        })
+        .await;
 }
 
 async fn reconcile(syncer: &Arc<Syncer>) {

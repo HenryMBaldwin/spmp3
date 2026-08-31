@@ -46,6 +46,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/", get(api::index_handler))
+        .route("/api/status", get(api::status_handler))
         .route("/api/plan", post(api::plan_handler))
         .route("/api/track/{id}", get(api::track_handler))
         .layer(TraceLayer::new_for_http())

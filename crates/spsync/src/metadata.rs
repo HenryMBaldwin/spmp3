@@ -12,6 +12,12 @@ use crate::track::TrackRef;
 
 const BATCH_SIZE: usize = 200;
 
+pub(crate) struct TrackInfo {
+    pub length: Duration,
+    pub title: String,
+    pub artist: String,
+}
+
 fn request(chunk: &[TrackRef]) -> BatchedEntityRequest {
     BatchedEntityRequest {
         entity_request: chunk
@@ -29,9 +35,21 @@ fn request(chunk: &[TrackRef]) -> BatchedEntityRequest {
     }
 }
 
-/// Track lengths keyed by uri, for every track the batched metadata call resolved.
-pub(crate) async fn fetch(session: &Session, tracks: &[TrackRef]) -> HashMap<String, Duration> {
-    let mut lengths = HashMap::with_capacity(tracks.len());
+fn info_from(track: &Track) -> TrackInfo {
+    TrackInfo {
+        length: u64::try_from(track.duration()).map_or(Duration::ZERO, Duration::from_millis),
+        title: track.name().to_owned(),
+        artist: track
+            .artist
+            .first()
+            .map(|a| a.name().to_owned())
+            .unwrap_or_default(),
+    }
+}
+
+/// Track title, artist and length keyed by uri, for every track the batch resolved.
+pub(crate) async fn fetch(session: &Session, tracks: &[TrackRef]) -> HashMap<String, TrackInfo> {
+    let mut resolved = HashMap::with_capacity(tracks.len());
 
     for chunk in tracks.chunks(BATCH_SIZE) {
         let response = match session
@@ -56,12 +74,10 @@ pub(crate) async fn fetch(session: &Session, tracks: &[TrackRef]) -> HashMap<Str
                     continue;
                 };
 
-                if let Ok(ms) = u64::try_from(track.duration()) {
-                    lengths.insert(data.entity_uri, Duration::from_millis(ms));
-                }
+                resolved.insert(data.entity_uri, info_from(&track));
             }
         }
     }
 
-    lengths
+    resolved
 }
