@@ -9,6 +9,7 @@ mod session;
 mod sync;
 mod track;
 mod transcode;
+mod youtube;
 
 use std::{fmt, fs, path::PathBuf, sync::Arc};
 
@@ -23,8 +24,11 @@ pub use crate::{
     sync::{Failure, SyncReport},
     track::TrackRef,
 };
-use common::manifest::MANIFEST_FILE;
-pub use common::manifest::{Entry, Manifest};
+use common::{manifest::MANIFEST_FILE, overrides::OVERRIDES_FILE};
+pub use common::{
+    manifest::{Entry, Manifest},
+    overrides::Overrides,
+};
 
 use crate::session::SessionManager;
 
@@ -110,6 +114,17 @@ impl Client {
     /// Returns [`SpsyncError::Manifest`] if the manifest on disk is malformed.
     pub fn manifest(&self) -> Result<Manifest, SpsyncError> {
         Ok(Manifest::load(&self.manifest_path())?)
+    }
+
+    pub fn overrides_path(&self) -> PathBuf {
+        self.inner.config.library_dir.join(OVERRIDES_FILE)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`SpsyncError::Overrides`] if the overrides file on disk is malformed.
+    pub fn overrides(&self) -> Result<Overrides, SpsyncError> {
+        Ok(Overrides::load(&self.overrides_path())?)
     }
 
     /// # Errors

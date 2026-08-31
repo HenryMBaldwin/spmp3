@@ -26,11 +26,13 @@ librespot-protocol = { version = "0.8.0", default-features = false }
 mp3lame-encoder = "0.2.1"
 protobuf = "3"
 symphonia = { version = "0.5.4", default-features = false, features = [
+  "aac",
+  "isomp4",
   "ogg",
   "vorbis",
 ] }
 thiserror = "2.0.19"
-tokio = { version = "1.48.0", features = ["rt", "sync", "time"] }
+tokio = { version = "1.48.0", features = ["process", "rt", "sync", "time"] }
 tracing = "0.1.44"
 
 [dev-dependencies]

@@ -43,4 +43,10 @@ pub enum SpsyncError {
 
     #[error("transcode error: {0}")]
     Transcode(String),
+
+    #[error("overrides error: {0}")]
+    Overrides(#[from] common::overrides::OverrideError),
+
+    #[error("could not fetch {url}: {reason}")]
+    Source { url: String, reason: String },
 }
