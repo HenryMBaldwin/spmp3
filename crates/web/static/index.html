@@ -5,30 +5,178 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>spmp3</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 16px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
-  button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
-  button[disabled] { opacity: .5; cursor: default; }
-  #log { font-family: ui-monospace, monospace; font-size: .85rem; white-space: pre-wrap;
-         max-height: 22rem; overflow-y: auto; border: 1px solid currentColor; padding: .5rem;
-         margin-top: 1rem; }
-  progress { width: 100%; height: 1rem; }
-  .row { display: flex; gap: .5rem; align-items: center; margin: 1rem 0; }
-  .muted { opacity: .7; }
+  :root {
+    color-scheme: light dark;
+    --fg: #16161a;
+    --dim: #6b6b76;
+    --faint: #b9b9c2;
+    --bad: #a32d2d;
+    --bg: #fbfbfa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #d6d6dc; --dim: #8a8a95; --faint: #3d3d46; --bad: #e08585; --bg: #101012; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--fg); background: var(--bg);
+    max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 5rem;
+  }
+  h1 { font: inherit; font-weight: 600; margin: 0 0 2rem; }
+  h1::before { content: "$ "; color: var(--faint); }
+  section { margin: 0 0 2rem; }
+  .label { color: var(--dim); }
+  .k { color: var(--dim); display: inline-block; min-width: 9rem; }
+  .sep { color: var(--faint); }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 0 1rem 0 0; vertical-align: top; white-space: nowrap; }
+  td.err { color: var(--bad); white-space: normal; }
+  td.wrap { white-space: normal; }
+  .rule { color: var(--faint); margin: 0 0 .5rem; user-select: none; overflow: hidden; }
+  button {
+    font: inherit; color: var(--fg); background: none;
+    border: 0; padding: 0; margin-right: 1.5rem; cursor: pointer;
+  }
+  button::before { content: "[ "; color: var(--faint); }
+  button::after  { content: " ]"; color: var(--faint); }
+  button:hover:not([disabled]) { color: var(--fg); text-decoration: underline; }
+  button[disabled] { color: var(--faint); cursor: default; }
+  #chosen { color: var(--dim); }
+  #bar { width: 100%; height: .35rem; margin-top: 1rem; }
+  #log { white-space: pre-wrap; color: var(--dim); margin-top: 1rem;
+         max-height: 20rem; overflow-y: auto; }
+  #support:empty { display: none; }
+  #support { color: var(--bad); margin: 0 0 1.5rem; }
+  .empty { color: var(--dim); }
 </style>
 </head>
 <body>
 <h1>spmp3</h1>
+
 <p id="support"></p>
-<div class="row">
-  <button id="pick">Choose player</button>
-  <button id="sync" disabled>Sync</button>
-  <span id="chosen" class="muted"></span>
-</div>
-<progress id="bar" value="0" max="1" hidden></progress>
-<div id="log"></div>
+
+<section id="status">
+  <div class="rule">──────────────────────────────────────────────────────────────────────</div>
+  <div class="empty">loading status...</div>
+</section>
+
+<section>
+  <div class="rule">──────────────────────────────────────────────────────────────────────</div>
+  <button id="pick">choose player</button>
+  <button id="sync" disabled>sync</button>
+  <span id="chosen"></span>
+  <progress id="bar" value="0" max="1" hidden></progress>
+  <div id="log"></div>
+</section>
 
 <script>
+const RULE = '─'.repeat(70);
+
+function bytes(n) {
+  if (!n) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i >= 2 ? v.toFixed(1) : Math.round(v)) + ' ' + u[i];
+}
+
+function ago(ts) {
+  if (!ts) return 'never';
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+function stamp(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
+function row(k, v) {
+  return `<div><span class="k">${esc(k)}</span>${v}</div>`;
+}
+
+function renderStatus(s) {
+  const el = document.getElementById('status');
+  const lib = s.library || {};
+  const run = s.last_run;
+  const dev = s.device;
+  const fails = s.failures || [];
+  const dim = (t) => `<span class="sep">${esc(t)}</span>`;
+
+  let html = `<div class="rule">${RULE}</div>`;
+
+  if (!s.authenticated && !s.updated_at) {
+    html += row('spotify', '<span class="empty">not authorized &mdash; run the login container</span>');
+  }
+
+  html += row('library',
+    `${lib.tracks ?? 0} tracks ${dim('·')} ${lib.liked ?? 0} liked ${dim('·')} ${bytes(lib.bytes)}`);
+
+  if (run) {
+    const bits = [];
+    if (run.added) bits.push(`+${run.added} added`);
+    if (run.restored) bits.push(`${run.restored} restored`);
+    if (run.removed) bits.push(`${run.removed} removed`);
+    if (!bits.length) bits.push('no changes');
+    html += row('last sync',
+      `${stamp(run.finished_at)} ${dim('·')} ${ago(run.finished_at)} ${dim('·')} ${bits.join(' ' + dim('·') + ' ')}`);
+  } else {
+    html += row('last sync', '<span class="empty">not yet run</span>');
+  }
+
+  if (dev) {
+    const pending = dev.pending
+      ? `<span class="k" style="min-width:0"></span>${dev.pending} pending`
+      : 'in sync';
+    html += row('device',
+      `${dev.files} files ${dim('·')} ${stamp(dev.synced_at)} ${dim('·')} ${pending}`);
+  } else {
+    html += row('device', '<span class="empty">never synced</span>');
+  }
+
+  if (fails.length) {
+    html += `<div style="margin-top:1.5rem"><span class="label">failed downloads (${fails.length})</span></div>`;
+    html += '<table>';
+    for (const f of fails) {
+      const name = (f.artist || f.title)
+        ? `${esc(f.artist)}${f.artist && f.title ? ' &mdash; ' : ''}${esc(f.title)}`
+        : `<span class="empty">${esc(f.uri)}</span>`;
+      html += `<tr><td class="wrap">${name}</td><td class="err">${esc(f.error)}</td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  if (s.updated_at) {
+    html += `<div style="margin-top:1rem"><span class="k">updated</span>${dim(ago(s.updated_at))}</div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) throw new Error(res.status);
+    renderStatus(await res.json());
+  } catch (e) {
+    document.getElementById('status').innerHTML =
+      `<div class="rule">${RULE}</div><div class="empty">status unavailable (${esc(e.message || e)})</div>`;
+  }
+}
+
+loadStatus();
+setInterval(loadStatus, 30000);
+
 const CONCURRENCY = 4;
 const out = document.getElementById('log');
 const bar = document.getElementById('bar');

@@ -19,7 +19,8 @@ use common::{
 use crate::{
     Client, Removed, SpsyncError, TrackRef,
     download::{Cover, TrackMeta},
-    durations, transcode,
+    metadata::{self, TrackInfo},
+    transcode,
 };
 
 const MAX_STEM: usize = 120;
@@ -86,18 +87,20 @@ fn mean(total: Duration, count: usize) -> Duration {
 }
 
 /// Length of `tracks[i..]` at each index, charging tracks of unknown length the mean.
-fn suffix_lengths(tracks: &[TrackRef], lengths: &HashMap<String, Duration>) -> Vec<Duration> {
+fn suffix_lengths(tracks: &[TrackRef], resolved: &HashMap<String, TrackInfo>) -> Vec<Duration> {
     let (known, count) = tracks
         .iter()
-        .filter_map(|track| lengths.get(&track.uri))
-        .fold((Duration::ZERO, 0), |(sum, count), length| {
-            (sum + *length, count + 1)
+        .filter_map(|track| resolved.get(&track.uri))
+        .fold((Duration::ZERO, 0), |(sum, count), info| {
+            (sum + info.length, count + 1)
         });
     let fallback = mean(known, count);
 
     let mut suffix = vec![Duration::ZERO; tracks.len() + 1];
     for (index, track) in tracks.iter().enumerate().rev() {
-        let length = lengths.get(&track.uri).copied().unwrap_or(fallback);
+        let length = resolved
+            .get(&track.uri)
+            .map_or(fallback, |info| info.length);
         suffix[index] = suffix[index + 1] + length;
     }
 
@@ -154,6 +157,8 @@ pub struct SyncReport {
 #[derive(Debug)]
 pub struct Failure {
     pub uri: String,
+    pub artist: String,
+    pub title: String,
     pub error: String,
 }
 
@@ -246,6 +251,8 @@ fn apply_removals(
             }
             Err(e) => result.failed.push(Failure {
                 uri: entry.entry.uri.clone(),
+                artist: entry.entry.artist.clone(),
+                title: String::new(),
                 error: format!("could not remove {}: {e}", path.display()),
             }),
         }
@@ -330,24 +337,24 @@ impl Client {
         })
     }
 
-    async fn track_lengths(
+    async fn track_info(
         &self,
         tracks: &[TrackRef],
-    ) -> Result<HashMap<String, Duration>, SpsyncError> {
+    ) -> Result<HashMap<String, TrackInfo>, SpsyncError> {
         if tracks.is_empty() {
             return Ok(HashMap::new());
         }
 
-        let lengths = durations::fetch(&self.session().await?, tracks).await;
-        if !lengths.is_empty() && lengths.len() < tracks.len() {
+        let resolved = metadata::fetch(&self.session().await?, tracks).await;
+        if !resolved.is_empty() && resolved.len() < tracks.len() {
             tracing::warn!(
-                resolved = lengths.len(),
+                resolved = resolved.len(),
                 tracks = tracks.len(),
                 "some track lengths are unresolved; the estimate charges them the mean"
             );
         }
 
-        Ok(lengths)
+        Ok(resolved)
     }
 
     /// # Errors
@@ -364,9 +371,9 @@ impl Client {
         let mut taken: HashSet<PathBuf> =
             manifest.entries.values().map(|e| e.path.clone()).collect();
 
-        let lengths = self.track_lengths(tracks).await?;
-        let suffix = suffix_lengths(tracks, &lengths);
-        let known_lengths = !lengths.is_empty();
+        let resolved = self.track_info(tracks).await?;
+        let suffix = suffix_lengths(tracks, &resolved);
+        let known_lengths = !resolved.is_empty();
 
         let run_started = Instant::now();
         let mut library_size = library_bytes(&self.config().library_dir);
@@ -443,8 +450,11 @@ impl Client {
                 Err(e) => {
                     work_time += started.elapsed();
                     tracing::warn!(progress = %progress, uri = %track.uri, error = %e, "track failed");
+                    let info = resolved.get(&track.uri);
                     report.failed.push(Failure {
                         uri: track.uri.clone(),
+                        artist: info.map(|i| i.artist.clone()).unwrap_or_default(),
+                        title: info.map(|i| i.title.clone()).unwrap_or_default(),
                         error: e.to_string(),
                     });
                 }
@@ -513,10 +523,18 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Entry, Manifest, Removed, TrackMeta, TrackRef, apply_removals, apply_restores, file_name,
-        human_bytes, human_duration, partition_restores, projected_bytes, remaining_estimate,
-        suffix_lengths, sweep_partials,
+        Entry, Manifest, Removed, TrackInfo, TrackMeta, TrackRef, apply_removals, apply_restores,
+        file_name, human_bytes, human_duration, partition_restores, projected_bytes,
+        remaining_estimate, suffix_lengths, sweep_partials,
     };
+
+    fn info(secs: u64) -> TrackInfo {
+        TrackInfo {
+            length: Duration::from_secs(secs),
+            title: String::new(),
+            artist: String::new(),
+        }
+    }
 
     fn meta(artist: &str, title: &str) -> TrackMeta {
         TrackMeta {
@@ -620,10 +638,10 @@ mod tests {
     #[test]
     fn suffix_lengths_run_backwards_from_zero() {
         let tracks = [track("a"), track("b"), track("c")];
-        let lengths: HashMap<String, Duration> = tracks
+        let lengths: HashMap<String, TrackInfo> = tracks
             .iter()
             .zip([30, 60, 90])
-            .map(|(t, secs)| (t.uri.clone(), Duration::from_secs(secs)))
+            .map(|(t, secs)| (t.uri.clone(), info(secs)))
             .collect();
 
         assert_eq!(
@@ -640,9 +658,9 @@ mod tests {
     #[test]
     fn suffix_lengths_charge_unknown_tracks_the_mean() {
         let tracks = [track("a"), track("b"), track("c")];
-        let lengths: HashMap<String, Duration> = [
-            (tracks[0].uri.clone(), Duration::from_secs(30)),
-            (tracks[1].uri.clone(), Duration::from_secs(90)),
+        let lengths: HashMap<String, TrackInfo> = [
+            (tracks[0].uri.clone(), info(30)),
+            (tracks[1].uri.clone(), info(90)),
         ]
         .into_iter()
         .collect();

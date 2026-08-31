@@ -61,7 +61,10 @@ impl Syncer {
         )?)
     }
 
-    fn state(&self) -> Result<DeviceState, Mp3syncError> {
+    /// # Errors
+    ///
+    /// Returns [`Mp3syncError`] if the recorded device state cannot be read.
+    pub fn state(&self) -> Result<DeviceState, Mp3syncError> {
         DeviceState::load(&self.config.device_state)
     }
 

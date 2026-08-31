@@ -2,6 +2,7 @@ mod config;
 mod device;
 mod library;
 mod mount;
+mod status;
 
 use std::{process::ExitCode, sync::Arc};
 
@@ -55,8 +56,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, rx) = watch::channel(false);
 
-    let library = tokio::spawn(library::run(client, config.library_interval, rx.clone()));
-    let device = tokio::spawn(device::run(syncer, config.device_poll, rx));
+    let status = Arc::new(status::StatusFile::new(
+        config.spotify.library_dir.join(common::status::STATUS_FILE),
+    ));
+
+    let library = tokio::spawn(library::run(
+        client,
+        config.library_interval,
+        Arc::clone(&status),
+        rx.clone(),
+    ));
+    let device = tokio::spawn(device::run(syncer, config.device_poll, status, rx));
 
     wait_for_shutdown().await;
     tracing::info!("shutdown signal received");
