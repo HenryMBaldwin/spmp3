@@ -43,7 +43,26 @@ pub struct Override {
     /// Human-readable name, kept so the entry stays identifiable after it leaves the failure list.
     #[serde(default)]
     pub label: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub title: String,
     pub at: i64,
+}
+
+impl Override {
+    /// Falls back to splitting `label` on the first " - " when artist and title are unset.
+    #[must_use]
+    pub fn names(&self) -> (String, String) {
+        if !self.artist.is_empty() || !self.title.is_empty() {
+            return (self.artist.clone(), self.title.clone());
+        }
+
+        match self.label.split_once(" - ") {
+            Some((artist, title)) => (artist.trim().to_owned(), title.trim().to_owned()),
+            None => (String::new(), self.label.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +203,8 @@ mod tests {
             Override {
                 action: Action::Ignore,
                 label: "Artist - Gone".to_owned(),
+                artist: "Artist".to_owned(),
+                title: "Gone".to_owned(),
                 at: 1,
             },
         );
@@ -194,6 +215,8 @@ mod tests {
                     url: "https://youtu.be/abc".to_owned(),
                 },
                 label: "Artist - Elsewhere".to_owned(),
+                artist: "Artist".to_owned(),
+                title: "Elsewhere".to_owned(),
                 at: 2,
             },
         );
@@ -205,6 +228,51 @@ mod tests {
         assert_eq!(loaded.source("elsewhere"), Some("https://youtu.be/abc"));
         assert_eq!(loaded.source("gone"), None);
         assert!(!loaded.is_ignored("unknown"));
+    }
+
+    #[test]
+    fn names_prefer_explicit_fields() {
+        let o = Override {
+            action: Action::Ignore,
+            label: "ignored label".to_owned(),
+            artist: "Hippo Campus".to_owned(),
+            title: "Passenger".to_owned(),
+            at: 0,
+        };
+
+        assert_eq!(
+            o.names(),
+            ("Hippo Campus".to_owned(), "Passenger".to_owned())
+        );
+    }
+
+    #[test]
+    fn names_fall_back_to_splitting_the_label() {
+        let o = Override {
+            action: Action::Ignore,
+            label: "Hippo Campus - Passenger".to_owned(),
+            artist: String::new(),
+            title: String::new(),
+            at: 0,
+        };
+
+        assert_eq!(
+            o.names(),
+            ("Hippo Campus".to_owned(), "Passenger".to_owned())
+        );
+    }
+
+    #[test]
+    fn names_treat_an_unsplittable_label_as_a_title() {
+        let o = Override {
+            action: Action::Ignore,
+            label: "Passenger".to_owned(),
+            artist: String::new(),
+            title: String::new(),
+            at: 0,
+        };
+
+        assert_eq!(o.names(), (String::new(), "Passenger".to_owned()));
     }
 
     #[test]

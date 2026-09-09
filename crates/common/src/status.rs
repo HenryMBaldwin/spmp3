@@ -54,6 +54,14 @@ pub struct Failure {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Sourced {
+    pub checked_at: i64,
+    pub tracks: usize,
+    pub downloaded: usize,
+    pub failures: Vec<Failure>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Device {
     pub synced_at: i64,
     pub files: usize,
@@ -73,6 +81,8 @@ pub struct Status {
     pub failures: Vec<Failure>,
     #[serde(default)]
     pub device: Option<Device>,
+    #[serde(default)]
+    pub sourced: Option<Sourced>,
 }
 
 impl Status {
@@ -130,6 +140,7 @@ mod tests {
                 error: "unavailable".to_owned(),
             }],
             device: None,
+            sourced: None,
         };
 
         status.save(&path).expect("save");

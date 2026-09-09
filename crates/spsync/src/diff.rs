@@ -86,6 +86,7 @@ mod tests {
                     album: "album".to_owned(),
                     source_format: "OGG_VORBIS_320".to_owned(),
                     encoder: "lame-vbr-v0".to_owned(),
+                    source_url: String::new(),
                 },
             );
         }

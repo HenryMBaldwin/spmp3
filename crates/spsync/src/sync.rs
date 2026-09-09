@@ -12,6 +12,7 @@ use id3::{
 
 use common::{
     manifest::{Entry, MANIFEST_FILE, Manifest},
+    overrides::Overrides,
     path::sanitize_component,
     tag::TRACK_ID_DESCRIPTION,
 };
@@ -26,17 +27,33 @@ use crate::{
 const MAX_STEM: usize = 120;
 const SOURCED_FORMAT: &str = "youtube-m4a";
 
-/// Drops tracks the overrides file marks ignored, so they stop being retried and reported.
-fn queue(tracks: &[TrackRef], overrides: &common::overrides::Overrides) -> Vec<TrackRef> {
+/// Drops tracks the overrides file marks ignored or sourced; sourced ones run unpaced elsewhere.
+fn queue(tracks: &[TrackRef], overrides: &Overrides) -> Vec<TrackRef> {
+    let mut ignored = 0;
+    let mut sourced = 0;
+
     let kept: Vec<TrackRef> = tracks
         .iter()
-        .filter(|track| !overrides.is_ignored(&track.id))
+        .filter(|track| {
+            if overrides.is_ignored(&track.id) {
+                ignored += 1;
+                return false;
+            }
+            if overrides.source(&track.id).is_some() {
+                sourced += 1;
+                return false;
+            }
+            true
+        })
         .cloned()
         .collect();
 
-    let ignored = tracks.len() - kept.len();
-    if ignored > 0 {
-        tracing::info!(ignored, "skipping tracks marked ignored");
+    if ignored > 0 || sourced > 0 {
+        tracing::info!(
+            ignored,
+            sourced,
+            "excluding overridden tracks from the spotify queue"
+        );
     }
 
     kept
@@ -201,6 +218,13 @@ pub struct SyncReport {
     pub removed: usize,
     pub missing_covers: usize,
     pub failed: Vec<Failure>,
+}
+
+#[derive(Debug, Default)]
+pub struct SourcedReport {
+    pub tracks: usize,
+    pub downloaded: usize,
+    pub failures: Vec<Failure>,
 }
 
 #[derive(Debug)]
@@ -398,6 +422,7 @@ impl Client {
                 album: meta.album.clone(),
                 source_format,
                 encoder: transcode::ENCODER.to_owned(),
+                source_url: source.unwrap_or_default().to_owned(),
             },
             track_duration: Duration::from_millis(u64::from(meta.duration_ms)),
             cover_error,
@@ -540,6 +565,89 @@ impl Client {
             took = %human_duration(run_started.elapsed()),
             "library sync finished"
         );
+
+        Ok(report)
+    }
+
+    fn sourced_is_current(
+        manifest: &Manifest,
+        library: &std::path::Path,
+        id: &str,
+        url: &str,
+    ) -> bool {
+        manifest
+            .entries
+            .get(id)
+            .is_some_and(|entry| entry.source_url == url && library.join(&entry.path).is_file())
+    }
+
+    /// Downloads url-sourced tracks, unpaced and without a spotify session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpsyncError::Overrides`] if the overrides file is malformed, or
+    /// [`SpsyncError::Manifest`] if the manifest cannot be read or written.
+    pub async fn sync_sourced(&self) -> Result<SourcedReport, SpsyncError> {
+        let overrides = self.overrides()?;
+        let library = self.config().library_dir.clone();
+        let manifest_path = library.join(MANIFEST_FILE);
+        let mut manifest = self.manifest()?;
+        let mut taken: HashSet<PathBuf> =
+            manifest.entries.values().map(|e| e.path.clone()).collect();
+
+        let mut report = SourcedReport::default();
+
+        for (id, entry) in &overrides.entries {
+            let Some(url) = overrides.source(id) else {
+                continue;
+            };
+
+            report.tracks += 1;
+            if Self::sourced_is_current(&manifest, &library, id, url) {
+                continue;
+            }
+
+            let (artist, title) = entry.names();
+            let info = TrackInfo {
+                length: Duration::ZERO,
+                title,
+                artist,
+                album: String::new(),
+            };
+            let track = TrackRef {
+                id: id.clone(),
+                uri: format!("spotify:track:{id}"),
+                added_at: None,
+            };
+
+            tracing::info!(id = %id, url = %url, "sourcing");
+            let started = Instant::now();
+
+            match self.sync_one(&track, &taken, Some(url), Some(&info)).await {
+                Ok(done) => {
+                    tracing::info!(
+                        track = %done.entry.path.display(),
+                        took = %human_duration(started.elapsed()),
+                        size = %human_bytes(u64::try_from(done.bytes).unwrap_or(0)),
+                        "sourced"
+                    );
+
+                    report.downloaded += 1;
+                    taken.insert(done.entry.path.clone());
+                    manifest.entries.insert(id.clone(), done.entry);
+                    manifest.save(&manifest_path)?;
+                }
+                Err(e) => {
+                    tracing::warn!(id = %id, url = %url, error = %e, "sourcing failed");
+                    report.failures.push(Failure {
+                        uri: track.uri,
+                        artist: info.artist,
+                        title: info.title,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
 
         Ok(report)
     }
@@ -770,6 +878,7 @@ mod tests {
             album: "album".to_owned(),
             source_format: "OGG_VORBIS_320".to_owned(),
             encoder: "lame-vbr-v0".to_owned(),
+            source_url: String::new(),
         }
     }
 
