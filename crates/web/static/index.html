@@ -47,6 +47,11 @@
          max-height: 20rem; overflow-y: auto; }
   #support:empty { display: none; }
   #support { color: var(--bad); margin: 0 0 1.5rem; }
+  #notice:empty { display: none; }
+  #notice { margin: 0 0 1.5rem; padding: .5rem .75rem; border-left: 2px solid var(--faint); }
+  #notice.bad { color: var(--bad); border-left-color: var(--bad); }
+  #notice.ok { color: var(--dim); }
+  #notice.busy { color: var(--dim); font-style: italic; }
   .empty { color: var(--dim); }
   td.act { text-align: right; white-space: nowrap; }
   button.mini { margin: 0 0 0 1rem; font-size: inherit; }
@@ -60,6 +65,7 @@
 <h1>spmp3</h1>
 
 <p id="support"></p>
+<p id="notice"></p>
 
 <section id="status">
   <div class="rule">──────────────────────────────────────────────────────────────────────</div>
@@ -217,14 +223,24 @@ function renderStatus(s) {
   }
 }
 
+function notice(msg, kind) {
+  const el = document.getElementById('notice');
+  el.className = kind || '';
+  el.textContent = msg;
+}
+
 async function act(action, id, label) {
-  let body = { action, id, label };
+  const body = { action, id, label };
+  const what = label || id;
 
   if (action === 'source') {
-    const url = prompt(`youtube url for:\n${label}`);
+    const url = prompt(`youtube url for:\n${what}`);
     if (!url) return;
     body.url = url.trim();
   }
+
+  for (const b of document.querySelectorAll('button.mini')) b.disabled = true;
+  notice(`saving ${action} for ${what}...`, 'busy');
 
   try {
     const res = await fetch('/api/overrides', {
@@ -232,13 +248,21 @@ async function act(action, id, label) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error((await res.text()) || res.status);
-    overrides = await res.json();
+    const text = await res.text();
+    if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+
+    overrides = JSON.parse(text);
+    const done = action === 'clear'
+      ? `cleared override for ${what}`
+      : `saved: ${what} will ${action === 'ignore' ? 'be skipped' : 'be fetched from youtube'} on the next library sync`;
+    notice(done, 'ok');
+    log(done);
     await loadStatus();
-    log(action === 'clear' ? `cleared override for ${label || id}`
-      : `${action}: ${label || id} (applies on the next library sync)`);
   } catch (e) {
-    log('override failed: ' + (e.message || e));
+    const msg = `could not save ${action} for ${what}: ${e.message || e}`;
+    notice(msg, 'bad');
+    log(msg);
+    for (const b of document.querySelectorAll('button.mini')) b.disabled = false;
   }
 }
 
