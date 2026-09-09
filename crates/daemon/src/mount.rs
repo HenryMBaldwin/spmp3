@@ -1,6 +1,8 @@
 use std::{fs, os::unix::fs::MetadataExt, path::Path};
 
-pub(crate) fn is_mounted(path: &Path) -> bool {
+const PROBE_FILE: &str = ".spmp3-probe";
+
+fn is_mount_point(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else {
         return false;
     };
@@ -20,13 +22,29 @@ pub(crate) fn is_mounted(path: &Path) -> bool {
     meta.dev() != parent_meta.dev()
 }
 
+/// Stale mounts keep their entry and cached `statfs` values; only a write detects them.
+fn is_writable(path: &Path) -> bool {
+    let probe = path.join(PROBE_FILE);
+    if fs::write(&probe, b"").is_err() {
+        return false;
+    }
+
+    let _ = fs::remove_file(&probe);
+
+    true
+}
+
+pub(crate) fn is_mounted(path: &Path) -> bool {
+    is_mount_point(path) && is_writable(path)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
 
     use std::fs;
 
-    use super::is_mounted;
+    use super::{PROBE_FILE, is_mounted, is_writable};
 
     #[test]
     fn plain_subdirectory_is_not_a_mount_point() {
@@ -51,5 +69,32 @@ mod tests {
         fs::write(&file, b"x").expect("write");
 
         assert!(!is_mounted(&file));
+    }
+
+    #[test]
+    fn writable_directory_probes_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        assert!(is_writable(dir.path()));
+        assert!(!dir.path().join(PROBE_FILE).exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unwritable_directory_fails_the_probe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut perms = fs::metadata(dir.path()).expect("metadata").permissions();
+        perms.set_mode(0o555);
+        fs::set_permissions(dir.path(), perms).expect("chmod");
+
+        let writable = is_writable(dir.path());
+
+        let mut perms = fs::metadata(dir.path()).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(dir.path(), perms).expect("restore");
+
+        assert!(!writable);
     }
 }
