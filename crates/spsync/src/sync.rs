@@ -74,6 +74,40 @@ async fn pace(track_duration: Duration, took: Duration, position: usize, total: 
     tokio::time::sleep(remaining).await;
 }
 
+struct Logged<'a> {
+    progress: &'a str,
+    path: &'a std::path::Path,
+    took: Duration,
+    bytes: u64,
+    library: u64,
+    projected: u64,
+    eta: Duration,
+}
+
+fn log_downloaded(entry: &Logged) {
+    tracing::info!(
+        progress = %entry.progress,
+        track = %entry.path.display(),
+        took = %human_duration(entry.took),
+        size = %human_bytes(entry.bytes),
+        library = %human_bytes(entry.library),
+        projected = %human_bytes(entry.projected),
+        eta = %human_duration(entry.eta),
+        "downloaded"
+    );
+}
+
+/// Deletes the file a re-download superseded, when the new name differs.
+fn drop_superseded(library: &std::path::Path, previous: &std::path::Path) {
+    match fs::remove_file(library.join(previous)) {
+        Ok(()) => tracing::info!(path = %previous.display(), "removed superseded file"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(path = %previous.display(), error = %e, "could not remove superseded file");
+        }
+    }
+}
+
 fn meta_from_info(info: Option<&TrackInfo>) -> TrackMeta {
     TrackMeta {
         title: info.map(|i| i.title.clone()).unwrap_or_default(),
@@ -454,6 +488,7 @@ impl Client {
     ///
     /// Returns [`SpsyncError::NotAuthenticated`] if no credentials are cached. Per-track
     /// failures are collected into the report.
+    #[allow(clippy::too_many_lines)]
     pub async fn sync_tracks(&self, tracks: &[TrackRef]) -> Result<SyncReport, SpsyncError> {
         sweep_partials(&self.config().library_dir)?;
 
@@ -492,6 +527,14 @@ impl Client {
 
             tracing::info!(progress = %progress, uri = %track.uri, "downloading");
 
+            let previous = manifest
+                .entries
+                .get(&track.id)
+                .map(|entry| entry.path.clone());
+            if let Some(path) = &previous {
+                taken.remove(path);
+            }
+
             match self
                 .sync_one(
                     track,
@@ -516,14 +559,14 @@ impl Client {
                     downloaded_time += done.track_duration;
                     library_size += bytes;
 
-                    tracing::info!(
-                        progress = %progress,
-                        track = %done.entry.path.display(),
-                        took = %human_duration(took),
-                        size = %human_bytes(bytes),
-                        library = %human_bytes(library_size),
-                        projected = %human_bytes(projected_bytes(downloaded_bytes, report.added, tracks.len())),
-                        eta = %human_duration(remaining_estimate(
+                    log_downloaded(&Logged {
+                        progress: &progress,
+                        path: &done.entry.path,
+                        took,
+                        bytes,
+                        library: library_size,
+                        projected: projected_bytes(downloaded_bytes, report.added, tracks.len()),
+                        eta: remaining_estimate(
                             self.config().realtime,
                             run_started.elapsed(),
                             work_time,
@@ -531,9 +574,12 @@ impl Client {
                             known_lengths.then(|| suffix[position]),
                             position,
                             tracks.len() - position,
-                        )),
-                        "downloaded"
-                    );
+                        ),
+                    });
+
+                    if let Some(path) = previous.filter(|path| *path != done.entry.path) {
+                        drop_superseded(&self.config().library_dir, &path);
+                    }
 
                     taken.insert(done.entry.path.clone());
                     manifest.entries.insert(track.id.clone(), done.entry);
@@ -544,6 +590,9 @@ impl Client {
                     }
                 }
                 Err(e) => {
+                    if let Some(path) = previous {
+                        taken.insert(path);
+                    }
                     work_time += started.elapsed();
                     tracing::warn!(progress = %progress, uri = %track.uri, error = %e, "track failed");
                     let info = resolved.get(&track.uri);
@@ -623,6 +672,11 @@ impl Client {
             tracing::info!(id = %id, url = %url, "sourcing");
             let started = Instant::now();
 
+            let previous = manifest.entries.get(id).map(|entry| entry.path.clone());
+            if let Some(path) = &previous {
+                taken.remove(path);
+            }
+
             match self.sync_one(&track, &taken, Some(url), Some(&info)).await {
                 Ok(done) => {
                     tracing::info!(
@@ -632,12 +686,19 @@ impl Client {
                         "sourced"
                     );
 
+                    if let Some(path) = previous.filter(|path| *path != done.entry.path) {
+                        drop_superseded(&library, &path);
+                    }
+
                     report.downloaded += 1;
                     taken.insert(done.entry.path.clone());
                     manifest.entries.insert(id.clone(), done.entry);
                     manifest.save(&manifest_path)?;
                 }
                 Err(e) => {
+                    if let Some(path) = previous {
+                        taken.insert(path);
+                    }
                     tracing::warn!(id = %id, url = %url, error = %e, "sourcing failed");
                     report.failures.push(Failure {
                         uri: track.uri,
@@ -855,6 +916,24 @@ mod tests {
             file_name(&meta("hey, nothing", "Maine"), "abc", &taken).to_str(),
             Some("hey, nothing - Maine.mp3")
         );
+    }
+
+    #[test]
+    fn drop_superseded_removes_the_old_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let old = PathBuf::from("old.mp3");
+        fs::write(dir.path().join(&old), b"mp3").expect("write");
+
+        super::drop_superseded(dir.path(), &old);
+
+        assert!(!dir.path().join(&old).exists());
+    }
+
+    #[test]
+    fn drop_superseded_tolerates_a_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        super::drop_superseded(dir.path(), &PathBuf::from("gone.mp3"));
     }
 
     #[test]
