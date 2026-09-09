@@ -53,6 +53,8 @@ pub struct Entry {
     pub source_format: String,
     #[serde(default)]
     pub encoder: String,
+    #[serde(default)]
+    pub source_url: String,
 }
 
 const fn liked_default() -> bool {

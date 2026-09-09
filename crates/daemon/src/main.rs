@@ -2,6 +2,7 @@ mod config;
 mod device;
 mod library;
 mod mount;
+mod sourced;
 mod status;
 
 use std::{process::ExitCode, sync::Arc};
@@ -60,9 +61,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.spotify.library_dir.join(common::status::STATUS_FILE),
     ));
 
+    let client_for_sourced = client.clone();
     let library = tokio::spawn(library::run(
         client,
         config.library_interval,
+        Arc::clone(&status),
+        rx.clone(),
+    ));
+    let sourced = tokio::spawn(sourced::run(
+        client_for_sourced,
+        config.override_poll,
         Arc::clone(&status),
         rx.clone(),
     ));
@@ -73,6 +81,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = tx.send(true);
 
     let _ = library.await;
+    let _ = sourced.await;
     let _ = device.await;
 
     Ok(())

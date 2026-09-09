@@ -160,6 +160,7 @@ mod tests {
                     album: (*album).to_owned(),
                     source_format: String::new(),
                     encoder: String::new(),
+                    source_url: String::new(),
                 },
             );
         }

@@ -21,7 +21,7 @@ pub use crate::{
     diff::{Diff, Removed},
     download::{Cover, TrackAudio, TrackMeta},
     error::SpsyncError,
-    sync::{Failure, SyncReport},
+    sync::{Failure, SourcedReport, SyncReport},
     track::TrackRef,
 };
 use common::{manifest::MANIFEST_FILE, overrides::OVERRIDES_FILE};

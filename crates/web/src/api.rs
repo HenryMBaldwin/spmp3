@@ -131,12 +131,20 @@ pub enum OverrideRequest {
         id: String,
         #[serde(default)]
         label: String,
+        #[serde(default)]
+        artist: String,
+        #[serde(default)]
+        title: String,
     },
     Source {
         id: String,
         url: String,
         #[serde(default)]
         label: String,
+        #[serde(default)]
+        artist: String,
+        #[serde(default)]
+        title: String,
     },
     Clear {
         id: String,
@@ -156,13 +164,24 @@ pub async fn set_override_handler(
     let path = config.library_dir.join(OVERRIDES_FILE);
     let mut overrides = Overrides::load(&path)?;
 
-    let (id, label, action) = match request {
-        OverrideRequest::Ignore { id, label } => (id, label, Some(Action::Ignore)),
-        OverrideRequest::Source { id, url, label } => {
+    let (id, label, artist, title, action) = match request {
+        OverrideRequest::Ignore {
+            id,
+            label,
+            artist,
+            title,
+        } => (id, label, artist, title, Some(Action::Ignore)),
+        OverrideRequest::Source {
+            id,
+            url,
+            label,
+            artist,
+            title,
+        } => {
             validate_url(&url)?;
-            (id, label, Some(Action::Source { url }))
+            (id, label, artist, title, Some(Action::Source { url }))
         }
-        OverrideRequest::Clear { id } => (id, String::new(), None),
+        OverrideRequest::Clear { id } => (id, String::new(), String::new(), String::new(), None),
     };
 
     if let Some(action) = action {
@@ -172,6 +191,8 @@ pub async fn set_override_handler(
             Override {
                 action,
                 label,
+                artist,
+                title,
                 at: now(),
             },
         );

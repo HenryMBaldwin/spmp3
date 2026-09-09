@@ -181,8 +181,10 @@ function renderStatus(s) {
         + `<td class="wrap">${nameOf(f)}</td>`
         + `<td class="err">${esc(f.error)}</td>`
         + `<td class="act">`
-        + `<button class="mini" data-act="ignore" data-id="${esc(id)}" data-label="${label}">remove</button>`
-        + `<button class="mini" data-act="source" data-id="${esc(id)}" data-label="${label}">youtube</button>`
+        + `<button class="mini" data-act="ignore" data-id="${esc(id)}" data-label="${label}"`
+        + ` data-artist="${esc(f.artist || '')}" data-title="${esc(f.title || '')}">remove</button>`
+        + `<button class="mini" data-act="source" data-id="${esc(id)}" data-label="${label}"`
+        + ` data-artist="${esc(f.artist || '')}" data-title="${esc(f.title || '')}">youtube</button>`
         + `</td></tr>`;
     }
     html += '</table>';
@@ -192,6 +194,8 @@ function renderStatus(s) {
   if (entries.length) {
     const failedById = {};
     for (const f of fails) failedById[idOf(f.uri)] = f.error;
+    for (const f of (s.sourced && s.sourced.failures) || []) failedById[idOf(f.uri)] = f.error;
+
 
     html += `<div style="margin-top:1.5rem"><span class="label">overrides (${entries.length})</span></div>`;
     html += '<table>';
@@ -219,7 +223,8 @@ function renderStatus(s) {
   el.innerHTML = html;
 
   for (const b of el.querySelectorAll('button.mini')) {
-    b.onclick = () => act(b.dataset.act, b.dataset.id, b.dataset.label || '');
+    b.onclick = () => act(b.dataset.act, b.dataset.id, b.dataset.label || '',
+      b.dataset.artist || '', b.dataset.title || '');
   }
 }
 
@@ -229,8 +234,8 @@ function notice(msg, kind) {
   el.textContent = msg;
 }
 
-async function act(action, id, label) {
-  const body = { action, id, label };
+async function act(action, id, label, artist, title) {
+  const body = { action, id, label, artist: artist || '', title: title || '' };
   const what = label || id;
 
   if (action === 'source') {
