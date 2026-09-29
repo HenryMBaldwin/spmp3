@@ -52,6 +52,9 @@
   #notice.bad { color: var(--bad); border-left-color: var(--bad); }
   #notice.ok { color: var(--dim); }
   #notice.busy { color: var(--dim); font-style: italic; }
+  #work:empty { display: none; }
+  #work { margin-top: .75rem; color: var(--fg); white-space: pre-wrap; }
+  #work .sub { color: var(--dim); }
   .empty { color: var(--dim); }
   td.act { text-align: right; white-space: nowrap; }
   button.mini { margin: 0 0 0 1rem; font-size: inherit; }
@@ -78,6 +81,7 @@
   <button id="sync" disabled>sync</button>
   <span id="chosen"></span>
   <progress id="bar" value="0" max="1" hidden></progress>
+  <div id="work"></div>
   <div id="log"></div>
 </section>
 
@@ -350,6 +354,10 @@ const MUSIC_DIR = 'Music';
 async function walk(dir, prefix, found) {
   for await (const [name, handle] of dir.entries()) {
     if (name.startsWith('.')) continue;
+    if (found.length && found.length % 100 === 0) {
+      work(`reading player  ${found.length} files`);
+      await new Promise((r) => setTimeout(r, 0));
+    }
     const path = prefix ? prefix + '/' + name : name;
     if (handle.kind === 'directory') {
       try {
@@ -372,7 +380,9 @@ async function scan() {
     return [];
   }
 
-  return walk(music, MUSIC_DIR, []);
+  const found = await walk(music, MUSIC_DIR, []);
+  work('');
+  return found;
 }
 
 async function dirFor(segments, create) {
@@ -406,17 +416,47 @@ async function moveFile(from, to) {
   await dir.removeEntry(name);
 }
 
-async function pool(items, worker) {
-  let index = 0, done = 0;
+function work(html) {
+  document.getElementById('work').innerHTML = html;
+}
+
+function secs(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return s + 's';
+  return Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+}
+
+async function pool(items, worker, label, name) {
+  let index = 0, done = 0, failed = 0;
+  const started = Date.now();
   bar.hidden = false; bar.max = items.length; bar.value = 0;
+
+  const show = (current) => {
+    const pct = Math.round((done / items.length) * 100);
+    const eta = done ? secs(((Date.now() - started) / done) * (items.length - done)) : '--';
+    const bad = failed ? `  <span class="err">${failed} failed</span>` : '';
+    work(`${label} ${done}/${items.length}  ${pct}%  eta ${eta}${bad}\n`
+      + `<span class="sub">${esc(current || '')}</span>`);
+  };
+
+  show('');
   const runners = Array.from({ length: Math.min(CONCURRENCY, items.length) }, async () => {
     while (index < items.length) {
       const item = items[index++];
-      try { await worker(item); } catch (e) { log('  failed: ' + (e.message || e)); }
+      show(name(item));
+      try {
+        await worker(item);
+      } catch (e) {
+        failed++;
+        log('  failed: ' + (e.message || e));
+      }
       bar.value = ++done;
+      show(name(item));
     }
   });
+
   await Promise.all(runners);
+  show('');
 }
 
 document.getElementById('pick').onclick = async () => {
@@ -448,7 +488,8 @@ document.getElementById('sync').onclick = async () => {
 
     if (plan.rename.length) {
       log('moving...');
-      await pool(plan.rename, async (step) => { await moveFile(step.from, step.to); });
+      await pool(plan.rename, async (step) => { await moveFile(step.from, step.to); },
+        'moving', (step) => step.to);
     }
     if (plan.copy.length) {
       log('copying...');
@@ -456,11 +497,12 @@ document.getElementById('sync').onclick = async () => {
         const r = await fetch(step.url);
         if (!r.ok) throw new Error(step.to + ': ' + r.status);
         await writeFile(step.to, r.body);
-      });
+      }, 'copying', (step) => step.to);
     }
     if (plan.delete.length) {
       log('deleting...');
-      await pool(plan.delete, async (path) => { await removeFile(path); });
+      await pool(plan.delete, async (path) => { await removeFile(path); },
+        'deleting', (path) => path);
     }
 
     const after = await scan();
@@ -487,6 +529,7 @@ document.getElementById('sync').onclick = async () => {
     log('error: ' + (e.message || e));
   } finally {
     bar.hidden = true;
+    work('');
     sync.disabled = false;
   }
 };
