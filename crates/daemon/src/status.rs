@@ -21,8 +21,14 @@ impl StatusFile {
         }
     }
 
+    /// Reloads first: the web writes the same file, and its device reading must survive.
     pub(crate) async fn update(&self, edit: impl FnOnce(&mut Status)) {
         let mut state = self.state.lock().await;
+
+        if let Ok(disk) = Status::load(&self.path) {
+            *state = disk;
+        }
+
         edit(&mut state);
         state.updated_at = common::status::now();
 
