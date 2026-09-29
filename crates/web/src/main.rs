@@ -52,6 +52,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             get(api::overrides_handler).post(api::set_override_handler),
         )
         .route("/api/plan", post(api::plan_handler))
+        .route("/api/device", post(api::record_device_handler))
         .route("/api/track/{id}", get(api::track_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(config.clone());
