@@ -44,11 +44,11 @@ pub(crate) async fn run(
 
 async fn on_mounted(syncer: &Arc<Syncer>, status: &Arc<StatusFile>) {
     reconcile(syncer).await;
-    sync(syncer).await;
-    record(syncer, status).await;
+    let failed = sync(syncer).await;
+    record(syncer, status, failed).await;
 }
 
-async fn record(syncer: &Arc<Syncer>, status: &Arc<StatusFile>) {
+async fn record(syncer: &Arc<Syncer>, status: &Arc<StatusFile>, failed: usize) {
     let pending = syncer.pending().map_or(0, |plan| {
         plan.copy.len() + plan.rename.len() + plan.delete.len()
     });
@@ -60,6 +60,8 @@ async fn record(syncer: &Arc<Syncer>, status: &Arc<StatusFile>) {
                 synced_at: common::status::now(),
                 files,
                 pending,
+                failed,
+                source: "daemon".to_owned(),
             });
         })
         .await;
@@ -90,16 +92,16 @@ async fn reconcile(syncer: &Arc<Syncer>) {
     }
 }
 
-async fn sync(syncer: &Arc<Syncer>) {
+async fn sync(syncer: &Arc<Syncer>) -> usize {
     match syncer.needs_sync() {
         Ok(false) => {
             tracing::info!("device already up to date");
-            return;
+            return 0;
         }
         Ok(true) => {}
         Err(e) => {
             tracing::error!(error = %e, "could not determine device sync state");
-            return;
+            return 0;
         }
     }
 
@@ -107,14 +109,23 @@ async fn sync(syncer: &Arc<Syncer>) {
     let result = tokio::task::spawn_blocking(move || syncer.sync()).await;
 
     match result {
-        Ok(Ok(report)) => tracing::info!(
-            copied = report.copied,
-            renamed = report.renamed,
-            deleted = report.deleted,
-            failed = report.failed.len(),
-            "device sync finished"
-        ),
-        Ok(Err(e)) => tracing::error!(error = %e, "device sync failed"),
-        Err(e) => tracing::error!(error = %e, "device sync task panicked"),
+        Ok(Ok(report)) => {
+            tracing::info!(
+                copied = report.copied,
+                renamed = report.renamed,
+                deleted = report.deleted,
+                failed = report.failed.len(),
+                "device sync finished"
+            );
+            report.failed.len()
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "device sync failed");
+            0
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "device sync task panicked");
+            0
+        }
     }
 }

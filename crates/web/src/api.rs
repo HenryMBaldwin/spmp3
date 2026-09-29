@@ -10,7 +10,7 @@ use axum::{
 use common::{
     manifest::{MANIFEST_FILE, Manifest},
     overrides::{Action, OVERRIDES_FILE, Override, Overrides, validate_url},
-    status::{STATUS_FILE, Status, now},
+    status::{Device, STATUS_FILE, Status, now},
 };
 use mp3sync::{DeviceFile, DeviceState, plan};
 use serde::{Deserialize, Serialize};
@@ -204,6 +204,36 @@ pub async fn set_override_handler(
     overrides.save(&path)?;
 
     Ok(Json(overrides))
+}
+
+pub async fn record_device_handler(
+    State(config): State<Config>,
+    Json(request): Json<PlanRequest>,
+) -> Result<Json<Status>, WebError> {
+    let manifest = manifest(&config)?;
+    let (state, orphans) = DeviceState::from_contents(&manifest, &request.contents);
+    let steps = plan(&manifest, &state);
+    let pending = steps.copy.len() + steps.rename.len() + steps.delete.len() + orphans.len();
+
+    let path = config.library_dir.join(STATUS_FILE);
+    let mut status = Status::load(&path)?;
+    status.device = Some(Device {
+        synced_at: now(),
+        files: request.contents.len(),
+        pending,
+        failed: 0,
+        source: "web".to_owned(),
+    });
+    status.updated_at = now();
+    status.save(&path)?;
+
+    tracing::info!(
+        files = request.contents.len(),
+        pending,
+        "recorded device state from the browser"
+    );
+
+    Ok(Json(status))
 }
 
 pub async fn status_handler(State(config): State<Config>) -> Result<Json<Status>, WebError> {

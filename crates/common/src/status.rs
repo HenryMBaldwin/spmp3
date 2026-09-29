@@ -66,6 +66,10 @@ pub struct Device {
     pub synced_at: i64,
     pub files: usize,
     pub pending: usize,
+    #[serde(default)]
+    pub failed: usize,
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
