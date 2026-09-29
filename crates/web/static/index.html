@@ -351,6 +351,13 @@ async function readTrackId(handle) {
 
 const MUSIC_DIR = 'Music';
 
+// macOS stores names decomposed, so a reported path never matches a handle name byte for byte.
+const realName = new Map();
+
+function nfc(value) {
+  return value.normalize('NFC');
+}
+
 async function walk(dir, prefix, found) {
   for await (const [name, handle] of dir.entries()) {
     if (name.startsWith('.')) continue;
@@ -358,7 +365,8 @@ async function walk(dir, prefix, found) {
       work(`reading player  ${found.length} files`);
       await new Promise((r) => setTimeout(r, 0));
     }
-    const path = prefix ? prefix + '/' + name : name;
+    const path = nfc(prefix ? prefix + '/' + name : name);
+    realName.set(path, name);
     if (handle.kind === 'directory') {
       try {
         await walk(handle, path, found);
@@ -380,9 +388,22 @@ async function scan() {
     return [];
   }
 
+  realName.clear();
+  realName.set(MUSIC_DIR, MUSIC_DIR);
   const found = await walk(music, MUSIC_DIR, []);
   work('');
   return found;
+}
+
+// Resolve a reported path back to the names the filesystem actually holds.
+function onDisk(path) {
+  const parts = [];
+  const segments = path.split('/');
+  for (let i = 0; i < segments.length; i++) {
+    const prefix = segments.slice(0, i + 1).join('/');
+    parts.push(realName.get(prefix) ?? segments[i]);
+  }
+  return parts;
 }
 
 async function dirFor(segments, create) {
@@ -401,14 +422,14 @@ async function writeFile(path, body) {
 }
 
 async function removeFile(path) {
-  const parts = path.split('/');
+  const parts = onDisk(path);
   const name = parts.pop();
   const dir = await dirFor(parts, false);
   await dir.removeEntry(name);
 }
 
 async function moveFile(from, to) {
-  const parts = from.split('/');
+  const parts = onDisk(from);
   const name = parts.pop();
   const dir = await dirFor(parts, false);
   const file = await (await dir.getFileHandle(name)).getFile();

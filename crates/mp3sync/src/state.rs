@@ -77,13 +77,23 @@ impl DeviceState {
 
             match matched.and_then(|id| manifest.entries.get(id).map(|entry| (id, entry))) {
                 Some((id, entry)) => {
-                    state.entries.insert(
-                        id.to_owned(),
-                        DeviceEntry {
-                            path: file.path.clone(),
-                            library_path: entry.path.clone(),
-                        },
-                    );
+                    let candidate = DeviceEntry {
+                        path: file.path.clone(),
+                        library_path: entry.path.clone(),
+                    };
+
+                    match state.entries.get(id) {
+                        Some(existing) if existing.path == device_path(entry) => {
+                            orphans.push(candidate.path);
+                        }
+                        Some(existing) => {
+                            orphans.push(existing.path.clone());
+                            state.entries.insert(id.to_owned(), candidate);
+                        }
+                        None => {
+                            state.entries.insert(id.to_owned(), candidate);
+                        }
+                    }
                 }
                 None => orphans.push(file.path.clone()),
             }
@@ -136,7 +146,7 @@ mod tests {
 
     use common::manifest::{Entry, Manifest};
 
-    use super::{DeviceFile, DeviceState};
+    use super::{DeviceFile, DeviceState, device_path};
 
     fn at(path: &str) -> DeviceFile {
         DeviceFile {
@@ -166,6 +176,31 @@ mod tests {
         }
 
         manifest
+    }
+
+    fn with_id(path: &str, id: &str) -> DeviceFile {
+        DeviceFile {
+            path: PathBuf::from(path),
+            id: Some(id.to_owned()),
+        }
+    }
+
+    #[test]
+    fn duplicate_files_for_one_track_are_orphaned() {
+        let m = manifest(&[("a", "Artist", "Album")]);
+        let wanted = device_path(&m.entries["a"]);
+        let keep = wanted.to_string_lossy().into_owned();
+        let stale = "Music/Artist/Album/stale.mp3";
+
+        for order in [
+            vec![with_id(stale, "a"), with_id(&keep, "a")],
+            vec![with_id(&keep, "a"), with_id(stale, "a")],
+        ] {
+            let (result, orphans) = DeviceState::from_contents(&m, &order);
+
+            assert_eq!(result.entries["a"].path, wanted);
+            assert_eq!(orphans, vec![PathBuf::from(stale)]);
+        }
     }
 
     #[test]
