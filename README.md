@@ -32,7 +32,7 @@ Set via environment. See `.env.example`.
 | `RUST_LOG`              | no       |                | Log filter, defaults to quiet dependencies |
 
 `MOUNT_DIR` must be the player's own mount point, reached through mount
-propagation.
+propagation. See [deploy](./deploy) for mounting the player on plug-in.
 
 ## Running
 
